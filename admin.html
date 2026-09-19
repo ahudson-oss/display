@@ -12,7 +12,7 @@
     table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 2rem; }
     th, td { padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid #e2e8f0; vertical-align: middle; }
     th { background: #f8fafc; font-weight: 600; }
-    .thumb { width: 80px; height: 45px; object-fit: cover; border-radius: 4px; }
+    .thumb { width: 80px; height: 45px; object-fit: cover; border-radius: 4px; pointer-events: none; }
     .hidden { display: none !important; }
     .flex-row { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; }
     .danger-btn { background: #ef4444; }
@@ -23,6 +23,13 @@
     .success-btn:hover { background: #059669; }
     .badge { display: inline-block; padding: 0.25rem 0.6rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; color: white; }
     details summary { font-size: 1.1rem; font-weight: 600; cursor: pointer; padding: 0.5rem 0; margin-bottom: 0.5rem; color: #334155; }
+
+    /* Drag and drop styling */
+    tr.draggable-row { cursor: grab; user-select: none; }
+    tr.draggable-row:active { cursor: grabbing; }
+    tr.dragging { opacity: 0.4; background: #e0f2fe; }
+    tr.drag-over { border-top: 3px solid #2563eb; }
+    .drag-handle { color: #94a3b8; font-size: 1.2rem; cursor: grab; padding-right: 0.5rem; }
   </style>
 </head>
 <body>
@@ -58,10 +65,14 @@
     </div>
 
     <!-- Active Slides Table -->
-    <h3>Currently on Displays (Active Rotation)</h3>
+    <div style="display: flex; justify-content: space-between; align-items: baseline;">
+      <h3>Currently on Displays (Active Rotation)</h3>
+      <span style="font-size: 0.85rem; color: #64748b;">Drag any row to reorder</span>
+    </div>
     <table>
       <thead>
         <tr>
+          <th style="width: 40px;">#</th>
           <th>Preview</th>
           <th>Title</th>
           <th>Duration</th>
@@ -111,7 +122,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
     import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } 
       from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-    import { getFirestore, collection, doc, addDoc, updateDoc, deleteDoc, onSnapshot, serverTimestamp } 
+    import { getFirestore, collection, doc, addDoc, updateDoc, deleteDoc, onSnapshot, writeBatch, serverTimestamp } 
       from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
     import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } 
       from "https://www.gstatic.com/firebasejs/10.8.0/firebase-storage.js";
@@ -130,6 +141,9 @@
     const auth = getAuth(app);
     const db = getFirestore(app);
     const storage = getStorage(app);
+
+    let activeSlidesCache = [];
+    let draggedRow = null;
 
     // Auth Handling
     document.getElementById('loginBtn').addEventListener('click', async () => {
@@ -157,55 +171,129 @@
       }
     });
 
-    // Real-Time Slide Management (Active vs Library)
+    // Real-Time Slide Management & Sorting
     function listenToSlides() {
       onSnapshot(collection(db, "slides"), (snapshot) => {
         const activeTbody = document.getElementById('activeSlideTableBody');
         const libraryTbody = document.getElementById('libraryTableBody');
         activeTbody.innerHTML = '';
         libraryTbody.innerHTML = '';
-        
-        snapshot.forEach((snapDoc) => {
-          const slide = snapDoc.data();
-          const tr = document.createElement('tr');
 
-          // Check if active (defaults to true if undefined)
-          if (slide.active !== false) {
-            tr.innerHTML = `
-              <td><img src="${slide.imageUrl}" class="thumb"></td>
-              <td><strong>${slide.title}</strong></td>
-              <td>${slide.duration}s</td>
-              <td>
-                <button class="secondary-btn" data-archive="${snapDoc.id}">Move to Library</button>
-              </td>
-              <td>
-                <button class="danger-btn" data-delete="${snapDoc.id}" data-path="${slide.storagePath}">Delete</button>
-              </td>
-            `;
-            activeTbody.appendChild(tr);
+        const activeList = [];
+        const libraryList = [];
+
+        snapshot.forEach((snapDoc) => {
+          const item = { id: snapDoc.id, ...snapDoc.data() };
+          if (item.active !== false) {
+            activeList.push(item);
           } else {
-            tr.innerHTML = `
-              <td><img src="${slide.imageUrl}" class="thumb"></td>
-              <td><strong>${slide.title}</strong></td>
-              <td>${slide.duration}s</td>
-              <td>
-                <button class="success-btn" data-activate="${snapDoc.id}">Add to Rotation</button>
-              </td>
-              <td>
-                <button class="danger-btn" data-delete="${snapDoc.id}" data-path="${slide.storagePath}">Delete</button>
-              </td>
-            `;
-            libraryTbody.appendChild(tr);
+            libraryList.push(item);
           }
         });
 
-        // Button Listeners
+        // Sort active slides in memory based on 'order' field
+        activeList.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        activeSlidesCache = activeList;
+
+        // Render Active Slides with Drag attributes
+        activeList.forEach((slide, index) => {
+          const tr = document.createElement('tr');
+          tr.className = 'draggable-row';
+          tr.draggable = true;
+          tr.dataset.id = slide.id;
+          tr.dataset.index = index;
+
+          tr.innerHTML = `
+            <td><span class="drag-handle">☰</span></td>
+            <td><img src="${slide.imageUrl}" class="thumb"></td>
+            <td><strong>${slide.title}</strong></td>
+            <td>${slide.duration}s</td>
+            <td>
+              <button class="secondary-btn" data-archive="${slide.id}">Move to Library</button>
+            </td>
+            <td>
+              <button class="danger-btn" data-delete="${slide.id}" data-path="${slide.storagePath}">Delete</button>
+            </td>
+          `;
+
+          // Drag Events
+          tr.addEventListener('dragstart', (e) => {
+            draggedRow = tr;
+            tr.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+          });
+
+          tr.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            tr.classList.add('drag-over');
+          });
+
+          tr.addEventListener('dragleave', () => {
+            tr.classList.remove('drag-over');
+          });
+
+          tr.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            tr.classList.remove('drag-over');
+            if (draggedRow === tr) return;
+
+            const fromIndex = parseInt(draggedRow.dataset.index);
+            const toIndex = parseInt(tr.dataset.index);
+
+            // Reorder array in memory
+            const reordered = [...activeSlidesCache];
+            const [movedItem] = reordered.splice(fromIndex, 1);
+            reordered.splice(toIndex, 0, movedItem);
+
+            // Batch commit the new sequential orders to Firestore
+            const batch = writeBatch(db);
+            reordered.forEach((item, idx) => {
+              batch.update(doc(db, "slides", item.id), { order: idx });
+            });
+            await batch.commit();
+          });
+
+          tr.addEventListener('dragend', () => {
+            tr.classList.remove('dragging');
+            document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+            draggedRow = null;
+          });
+
+          activeTbody.appendChild(tr);
+        });
+
+        // Render Library Slides
+        libraryList.forEach((slide) => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td><img src="${slide.imageUrl}" class="thumb"></td>
+            <td><strong>${slide.title}</strong></td>
+            <td>${slide.duration}s</td>
+            <td>
+              <button class="success-btn" data-activate="${slide.id}">Add to Rotation</button>
+            </td>
+            <td>
+              <button class="danger-btn" data-delete="${slide.id}" data-path="${slide.storagePath}">Delete</button>
+            </td>
+          `;
+          libraryTbody.appendChild(tr);
+        });
+
+        // Button Action Listeners
         document.querySelectorAll('[data-archive]').forEach(btn => {
           btn.onclick = () => updateDoc(doc(db, "slides", btn.dataset.archive), { active: false });
         });
 
         document.querySelectorAll('[data-activate]').forEach(btn => {
-          btn.onclick = () => updateDoc(doc(db, "slides", btn.dataset.activate), { active: true });
+          btn.onclick = () => {
+            // When restored, append to the end of the current order
+            const nextOrder = activeSlidesCache.length;
+            updateDoc(doc(db, "slides", btn.dataset.activate), { 
+              active: true, 
+              order: nextOrder 
+            });
+          };
         });
 
         document.querySelectorAll('[data-delete]').forEach(btn => {
@@ -252,7 +340,7 @@
       });
     }
 
-    // Upload New Slide Directly to Rotation
+    // Upload New Slide to Active
     document.getElementById('uploadBtn').addEventListener('click', async () => {
       const file = document.getElementById('slideFile').files[0];
       const title = document.getElementById('slideTitle').value.trim() || "Untitled Slide";
@@ -277,7 +365,7 @@
           imageUrl,
           storagePath,
           active: true,
-          order: 0,
+          order: activeSlidesCache.length, // Placed at the end of the playlist
           createdAt: serverTimestamp()
         });
 
