@@ -17,7 +17,12 @@
     .flex-row { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; }
     .danger-btn { background: #ef4444; }
     .danger-btn:hover { background: #dc2626; }
+    .secondary-btn { background: #64748b; }
+    .secondary-btn:hover { background: #475569; }
+    .success-btn { background: #10b981; }
+    .success-btn:hover { background: #059669; }
     .badge { display: inline-block; padding: 0.25rem 0.6rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; color: white; }
+    details summary { font-size: 1.1rem; font-weight: 600; cursor: pointer; padding: 0.5rem 0; margin-bottom: 0.5rem; color: #334155; }
   </style>
 </head>
 <body>
@@ -38,37 +43,57 @@
   <div id="dashSection" class="hidden">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
       <h1>TV Signage Dashboard</h1>
-      <button id="logoutBtn" style="background: #64748b;">Log Out</button>
+      <button id="logoutBtn" class="secondary-btn">Log Out</button>
     </div>
 
     <!-- Upload Card -->
     <div class="card">
       <h3>Upload New Slide</h3>
       <div class="flex-row">
-        <input type="text" id="slideTitle" placeholder="Slide Title (e.g., Pep Rally Schedule)" style="flex: 2;">
+        <input type="text" id="slideTitle" placeholder="Slide Title (e.g., Friday Pep Rally)" style="flex: 2;">
         <input type="number" id="slideDuration" placeholder="Secs" value="10" style="width: 80px;">
         <input type="file" id="slideFile" accept="image/*">
-        <button id="uploadBtn">Upload Slide</button>
+        <button id="uploadBtn">Upload to Active</button>
       </div>
     </div>
 
     <!-- Active Slides Table -->
-    <h3>Active Slides</h3>
+    <h3>Currently on Displays (Active Rotation)</h3>
     <table>
       <thead>
         <tr>
           <th>Preview</th>
           <th>Title</th>
           <th>Duration</th>
-          <th>Visibility</th>
-          <th>Action</th>
+          <th>Rotation Actions</th>
+          <th>Delete</th>
         </tr>
       </thead>
-      <tbody id="slideTableBody"></tbody>
+      <tbody id="activeSlideTableBody"></tbody>
     </table>
 
+    <!-- Collapsible Saved Slides Library -->
+    <details class="card" style="padding: 1rem 1.5rem;">
+      <summary>Saved Slide Library (Archived / Recurring)</summary>
+      <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 1rem;">
+        These slides stay saved in your cloud storage. Click "Add to Rotation" to push them live to the TVs at any time.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Preview</th>
+            <th>Title</th>
+            <th>Default Duration</th>
+            <th>Action</th>
+            <th>Delete</th>
+          </tr>
+        </thead>
+        <tbody id="libraryTableBody"></tbody>
+      </table>
+    </details>
+
     <!-- Live Screen Monitoring Table -->
-    <h3>Screen Health & Status</h3>
+    <h3 style="margin-top: 2rem;">Screen Health & Status</h3>
     <table>
       <thead>
         <tr>
@@ -120,51 +145,72 @@
 
     document.getElementById('logoutBtn').addEventListener('click', () => signOut(auth));
 
-    // Listen to Auth State
     onAuthStateChanged(auth, (user) => {
       if (user) {
         document.getElementById('authCard').classList.add('hidden');
         document.getElementById('dashSection').classList.remove('hidden');
         listenToSlides();
-        listenToScreens(); // Starts live monitoring upon staff login
+        listenToScreens();
       } else {
         document.getElementById('authCard').classList.remove('hidden');
         document.getElementById('dashSection').classList.add('hidden');
       }
     });
 
-    // Slides List & Realtime Updates
+    // Real-Time Slide Management (Active vs Library)
     function listenToSlides() {
       onSnapshot(collection(db, "slides"), (snapshot) => {
-        const tbody = document.getElementById('slideTableBody');
-        tbody.innerHTML = '';
+        const activeTbody = document.getElementById('activeSlideTableBody');
+        const libraryTbody = document.getElementById('libraryTableBody');
+        activeTbody.innerHTML = '';
+        libraryTbody.innerHTML = '';
         
         snapshot.forEach((snapDoc) => {
           const slide = snapDoc.data();
           const tr = document.createElement('tr');
-          tr.innerHTML = `
-            <td><img src="${slide.imageUrl}" class="thumb"></td>
-            <td><strong>${slide.title}</strong></td>
-            <td>${slide.duration}s</td>
-            <td>
-              <button style="background: ${slide.active ? '#10b981' : '#64748b'}" data-toggle="${snapDoc.id}" data-state="${!slide.active}">
-                ${slide.active ? 'Showing' : 'Hidden'}
-              </button>
-            </td>
-            <td>
-              <button class="danger-btn" data-delete="${snapDoc.id}" data-path="${slide.storagePath}">Delete</button>
-            </td>
-          `;
-          tbody.appendChild(tr);
+
+          // Check if active (defaults to true if undefined)
+          if (slide.active !== false) {
+            tr.innerHTML = `
+              <td><img src="${slide.imageUrl}" class="thumb"></td>
+              <td><strong>${slide.title}</strong></td>
+              <td>${slide.duration}s</td>
+              <td>
+                <button class="secondary-btn" data-archive="${snapDoc.id}">Move to Library</button>
+              </td>
+              <td>
+                <button class="danger-btn" data-delete="${snapDoc.id}" data-path="${slide.storagePath}">Delete</button>
+              </td>
+            `;
+            activeTbody.appendChild(tr);
+          } else {
+            tr.innerHTML = `
+              <td><img src="${slide.imageUrl}" class="thumb"></td>
+              <td><strong>${slide.title}</strong></td>
+              <td>${slide.duration}s</td>
+              <td>
+                <button class="success-btn" data-activate="${snapDoc.id}">Add to Rotation</button>
+              </td>
+              <td>
+                <button class="danger-btn" data-delete="${snapDoc.id}" data-path="${slide.storagePath}">Delete</button>
+              </td>
+            `;
+            libraryTbody.appendChild(tr);
+          }
         });
 
-        tbody.querySelectorAll('[data-toggle]').forEach(btn => {
-          btn.onclick = () => updateDoc(doc(db, "slides", btn.dataset.toggle), { active: btn.dataset.state === 'true' });
+        // Button Listeners
+        document.querySelectorAll('[data-archive]').forEach(btn => {
+          btn.onclick = () => updateDoc(doc(db, "slides", btn.dataset.archive), { active: false });
         });
 
-        tbody.querySelectorAll('[data-delete]').forEach(btn => {
+        document.querySelectorAll('[data-activate]').forEach(btn => {
+          btn.onclick = () => updateDoc(doc(db, "slides", btn.dataset.activate), { active: true });
+        });
+
+        document.querySelectorAll('[data-delete]').forEach(btn => {
           btn.onclick = async () => {
-            if (!confirm('Permanently remove this slide?')) return;
+            if (!confirm('Permanently delete this slide from the database and storage?')) return;
             await deleteDoc(doc(db, "slides", btn.dataset.delete));
             if (btn.dataset.path) {
               const fileRef = ref(storage, btn.dataset.path);
@@ -175,19 +221,18 @@
       });
     }
 
-    // Screens Heartbeat & Status Monitor
+    // Screens Heartbeat Monitor
     function listenToScreens() {
       onSnapshot(collection(db, "screens"), (snapshot) => {
         const tbody = document.getElementById('screenTableBody');
         tbody.innerHTML = '';
-
         const now = Date.now();
 
         snapshot.forEach((snapDoc) => {
           const screen = snapDoc.data();
           const lastSeenMs = screen.lastSeen ? screen.lastSeen.toMillis() : 0;
           const diffMinutes = Math.round((now - lastSeenMs) / 60000);
-          const isOnline = lastSeenMs > 0 && diffMinutes < 3; // Flags offline if silent > 3 mins
+          const isOnline = lastSeenMs > 0 && diffMinutes < 3;
 
           const tr = document.createElement('tr');
           tr.innerHTML = `
@@ -207,7 +252,7 @@
       });
     }
 
-    // Upload Slide
+    // Upload New Slide Directly to Rotation
     document.getElementById('uploadBtn').addEventListener('click', async () => {
       const file = document.getElementById('slideFile').files[0];
       const title = document.getElementById('slideTitle').value.trim() || "Untitled Slide";
@@ -242,7 +287,7 @@
         alert("Upload error: " + err.message);
       } finally {
         btn.disabled = false;
-        btn.innerText = "Upload Slide";
+        btn.innerText = "Upload to Active";
       }
     });
   </script>
