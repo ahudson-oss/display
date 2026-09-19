@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Signage Manager</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 2rem; max-width: 850px; margin: auto; background: #f1f5f9; color: #0f172a; }
+    .card { background: white; border-radius: 8px; padding: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 1.5rem; }
+    input, button { padding: 0.6rem 0.8rem; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 0.9rem; }
+    button { background: #2563eb; color: white; border: none; cursor: pointer; font-weight: 500; }
+    button:hover { background: #1d4ed8; }
+    table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    th, td { padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid #e2e8f0; vertical-align: middle; }
+    th { background: #f8fafc; font-weight: 600; }
+    .thumb { width: 80px; height: 45px; object-fit: cover; border-radius: 4px; }
+    .hidden { display: none !important; }
+    .flex-row { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; }
+    .danger-btn { background: #ef4444; }
+    .danger-btn:hover { background: #dc2626; }
+  </style>
+</head>
+<body>
+
+  <!-- AUTH SECTION -->
+  <div id="authCard" class="card">
+    <h2>Signage Staff Login</h2>
+    <p style="color: #64748b; margin: 0.5rem 0 1rem 0;">Please sign in with your staff account to manage displays.</p>
+    <div class="flex-row">
+      <input type="email" id="loginEmail" placeholder="Email" style="flex: 1;">
+      <input type="password" id="loginPass" placeholder="Password" style="flex: 1;">
+      <button id="loginBtn">Log In</button>
+    </div>
+    <p id="authError" style="color: #ef4444; margin-top: 0.5rem; font-size: 0.85rem;"></p>
+  </div>
+
+  <!-- DASHBOARD SECTION (Protected) -->
+  <div id="dashSection" class="hidden">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+      <h1>TV Signage Dashboard</h1>
+      <button id="logoutBtn" style="background: #64748b;">Log Out</button>
+    </div>
+
+    <div class="card">
+      <h3>Upload New Slide</h3>
+      <div class="flex-row">
+        <input type="text" id="slideTitle" placeholder="Slide Title (e.g., Pep Rally Schedule)" style="flex: 2;">
+        <input type="number" id="slideDuration" placeholder="Secs" value="10" style="width: 80px;">
+        <input type="file" id="slideFile" accept="image/*">
+        <button id="uploadBtn">Upload Slide</button>
+      </div>
+    </div>
+
+    <h3>Active Slides</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Preview</th>
+          <th>Title</th>
+          <th>Duration</th>
+          <th>Visibility</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody id="slideTableBody"></tbody>
+    </table>
+  </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } 
+      from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+    import { getFirestore, collection, doc, addDoc, updateDoc, deleteDoc, onSnapshot, serverTimestamp } 
+      from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+    import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } 
+      from "https://www.gstatic.com/firebasejs/10.8.0/firebase-storage.js";
+
+    // PASTE YOUR CONFIG HERE
+    const firebaseConfig = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_PROJECT_ID.appspot.com",
+      messagingSenderId: "...",
+      appId: "..."
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    const storage = getStorage(app);
+
+    // Auth Handling
+    document.getElementById('loginBtn').addEventListener('click', async () => {
+      const email = document.getElementById('loginEmail').value;
+      const pass = document.getElementById('loginPass').value;
+      document.getElementById('authError').innerText = '';
+      try {
+        await signInWithEmailAndPassword(auth, email, pass);
+      } catch (err) {
+        document.getElementById('authError').innerText = err.message;
+      }
+    });
+
+    document.getElementById('logoutBtn').addEventListener('click', () => signOut(auth));
+
+    onAuthStateChanged(auth, (user) => {
+      if (user) {
+        document.getElementById('authCard').classList.add('hidden');
+        document.getElementById('dashSection').classList.remove('hidden');
+        listenToSlides();
+      } else {
+        document.getElementById('authCard').classList.remove('hidden');
+        document.getElementById('dashSection').classList.add('hidden');
+      }
+    });
+
+    // Slides List & Realtime Updates in Admin
+    function listenToSlides() {
+      onSnapshot(collection(db, "slides"), (snapshot) => {
+        const tbody = document.getElementById('slideTableBody');
+        tbody.innerHTML = '';
+        
+        snapshot.forEach((snapDoc) => {
+          const slide = snapDoc.data();
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td><img src="${slide.imageUrl}" class="thumb"></td>
+            <td><strong>${slide.title}</strong></td>
+            <td>${slide.duration}s</td>
+            <td>
+              <button style="background: ${slide.active ? '#10b981' : '#64748b'}" data-toggle="${snapDoc.id}" data-state="${!slide.active}">
+                ${slide.active ? 'Showing' : 'Hidden'}
+              </button>
+            </td>
+            <td>
+              <button class="danger-btn" data-delete="${snapDoc.id}" data-path="${slide.storagePath}">Delete</button>
+            </td>
+          `;
+          tbody.appendChild(tr);
+        });
+
+        // Add action listeners
+        tbody.querySelectorAll('[data-toggle]').forEach(btn => {
+          btn.onclick = () => updateDoc(doc(db, "slides", btn.dataset.toggle), { active: btn.dataset.state === 'true' });
+        });
+
+        tbody.querySelectorAll('[data-delete]').forEach(btn => {
+          btn.onclick = async () => {
+            if (!confirm('Permanently remove this slide?')) return;
+            await deleteDoc(doc(db, "slides", btn.dataset.delete));
+            if (btn.dataset.path) {
+              const fileRef = ref(storage, btn.dataset.path);
+              deleteObject(fileRef).catch(e => console.warn(e));
+            }
+          };
+        });
+      });
+    }
+
+    // Upload Slide
+    document.getElementById('uploadBtn').addEventListener('click', async () => {
+      const file = document.getElementById('slideFile').files[0];
+      const title = document.getElementById('slideTitle').value.trim() || "Untitled Slide";
+      const duration = parseInt(document.getElementById('slideDuration').value) || 10;
+      const btn = document.getElementById('uploadBtn');
+
+      if (!file) return alert("Select an image first.");
+
+      btn.disabled = true;
+      btn.innerText = "Uploading...";
+
+      try {
+        const storagePath = `slides/${Date.now()}_${file.name.replace(/\s+/g, '_')}`;
+        const fileRef = ref(storage, storagePath);
+        
+        await uploadBytes(fileRef, file);
+        const imageUrl = await getDownloadURL(fileRef);
+
+        await addDoc(collection(db, "slides"), {
+          title,
+          duration,
+          imageUrl,
+          storagePath,
+          active: true,
+          order: 0,
+          createdAt: serverTimestamp()
+        });
+
+        document.getElementById('slideTitle').value = '';
+        document.getElementById('slideFile').value = '';
+      } catch (err) {
+        alert("Upload error: " + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerText = "Upload Slide";
+      }
+    });
+  </script>
+</body>
+</html>
