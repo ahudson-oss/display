@@ -23,6 +23,28 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
     import { getFirestore, collection, query, where, onSnapshot } 
       from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+   
+    import { doc, setDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+// Read ?screen=Name from the TV's configured URL Launcher address
+const urlParams = new URLSearchParams(window.location.search);
+const screenId = urlParams.get('screen') || 'TV-Default';
+
+async function sendHeartbeat() {
+  try {
+    await setDoc(doc(db, "screens", screenId), {
+      lastSeen: serverTimestamp(),
+      currentSlide: playlist[currentIndex]?.title || 'None',
+      status: 'online'
+    }, { merge: true });
+  } catch (err) {
+    console.warn("Heartbeat failed (offline or network blip):", err);
+  }
+}
+
+// Send initial ping, then ping every 60 seconds
+sendHeartbeat();
+setInterval(sendHeartbeat, 60000);
 
   // PASTE YOUR CONFIG HERE
     const firebaseConfig = {
