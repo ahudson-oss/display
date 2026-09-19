@@ -9,7 +9,7 @@
     input, button { padding: 0.6rem 0.8rem; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 0.9rem; }
     button { background: #2563eb; color: white; border: none; cursor: pointer; font-weight: 500; }
     button:hover { background: #1d4ed8; }
-    table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 2rem; }
     th, td { padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid #e2e8f0; vertical-align: middle; }
     th { background: #f8fafc; font-weight: 600; }
     .thumb { width: 80px; height: 45px; object-fit: cover; border-radius: 4px; }
@@ -17,6 +17,7 @@
     .flex-row { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; }
     .danger-btn { background: #ef4444; }
     .danger-btn:hover { background: #dc2626; }
+    .badge { display: inline-block; padding: 0.25rem 0.6rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; color: white; }
   </style>
 </head>
 <body>
@@ -40,6 +41,7 @@
       <button id="logoutBtn" style="background: #64748b;">Log Out</button>
     </div>
 
+    <!-- Upload Card -->
     <div class="card">
       <h3>Upload New Slide</h3>
       <div class="flex-row">
@@ -50,6 +52,7 @@
       </div>
     </div>
 
+    <!-- Active Slides Table -->
     <h3>Active Slides</h3>
     <table>
       <thead>
@@ -63,6 +66,20 @@
       </thead>
       <tbody id="slideTableBody"></tbody>
     </table>
+
+    <!-- Live Screen Monitoring Table -->
+    <h3>Screen Health & Status</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Screen ID</th>
+          <th>Status</th>
+          <th>Last Seen</th>
+          <th>Current Slide</th>
+        </tr>
+      </thead>
+      <tbody id="screenTableBody"></tbody>
+    </table>
   </div>
 
   <script type="module">
@@ -74,7 +91,6 @@
     import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } 
       from "https://www.gstatic.com/firebasejs/10.8.0/firebase-storage.js";
 
-    // PASTE YOUR CONFIG HERE
     const firebaseConfig = {
       apiKey: "AIzaSyAjkJ_PuIuFadQglmJO80_bKePxyPTJMyI",
       authDomain: "prep-signage-c24e9.firebaseapp.com",
@@ -104,18 +120,20 @@
 
     document.getElementById('logoutBtn').addEventListener('click', () => signOut(auth));
 
+    // Listen to Auth State
     onAuthStateChanged(auth, (user) => {
       if (user) {
         document.getElementById('authCard').classList.add('hidden');
         document.getElementById('dashSection').classList.remove('hidden');
         listenToSlides();
+        listenToScreens(); // Starts live monitoring upon staff login
       } else {
         document.getElementById('authCard').classList.remove('hidden');
         document.getElementById('dashSection').classList.add('hidden');
       }
     });
 
-    // Slides List & Realtime Updates in Admin
+    // Slides List & Realtime Updates
     function listenToSlides() {
       onSnapshot(collection(db, "slides"), (snapshot) => {
         const tbody = document.getElementById('slideTableBody');
@@ -140,7 +158,6 @@
           tbody.appendChild(tr);
         });
 
-        // Add action listeners
         tbody.querySelectorAll('[data-toggle]').forEach(btn => {
           btn.onclick = () => updateDoc(doc(db, "slides", btn.dataset.toggle), { active: btn.dataset.state === 'true' });
         });
@@ -154,6 +171,38 @@
               deleteObject(fileRef).catch(e => console.warn(e));
             }
           };
+        });
+      });
+    }
+
+    // Screens Heartbeat & Status Monitor
+    function listenToScreens() {
+      onSnapshot(collection(db, "screens"), (snapshot) => {
+        const tbody = document.getElementById('screenTableBody');
+        tbody.innerHTML = '';
+
+        const now = Date.now();
+
+        snapshot.forEach((snapDoc) => {
+          const screen = snapDoc.data();
+          const lastSeenMs = screen.lastSeen ? screen.lastSeen.toMillis() : 0;
+          const diffMinutes = Math.round((now - lastSeenMs) / 60000);
+          const isOnline = lastSeenMs > 0 && diffMinutes < 3; // Flags offline if silent > 3 mins
+
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td><strong>${snapDoc.id}</strong></td>
+            <td>
+              <span class="badge" style="background: ${isOnline ? '#10b981' : '#ef4444'};">
+                ${isOnline ? 'Online' : 'Offline'}
+              </span>
+            </td>
+            <td style="color: ${isOnline ? '#0f172a' : '#ef4444'};">
+              ${lastSeenMs === 0 ? 'Never' : diffMinutes === 0 ? 'Just now' : diffMinutes + 'm ago'}
+            </td>
+            <td>${screen.currentSlide || 'None'}</td>
+          `;
+          tbody.appendChild(tr);
         });
       });
     }
