@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>TV Display Player</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body, html { width: 100vw; height: 100vh; overflow: hidden; background: #000; }
+    #slide {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      opacity: 1;
+      transition: opacity 0.5s ease-in-out;
+    }
+  </style>
+</head>
+<body>
+  <img id="slide" alt="" />
+
+  <!-- Firebase Modular SDK -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import { getFirestore, collection, query, where, onSnapshot } 
+      from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+    // PASTE YOUR CONFIG HERE
+    const firebaseConfig = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_PROJECT_ID.appspot.com",
+      messagingSenderId: "...",
+      appId: "..."
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    let playlist = [];
+    let currentIndex = 0;
+    let timer = null;
+    const imgEl = document.getElementById('slide');
+
+    // Realtime Listener: updates instantly whenever a slide is added, edited, or deleted
+    const q = query(collection(db, "slides"), where("active", "==", true));
+    onSnapshot(q, (snapshot) => {
+      const slides = [];
+      snapshot.forEach(doc => slides.push({ id: doc.id, ...doc.data() }));
+      
+      // Sort in memory by order or title
+      slides.sort((a, b) => (a.order || 0) - (b.order || 0));
+
+      // Preload images into memory so slow networks never flash a white screen
+      slides.forEach(item => {
+        const pre = new Image();
+        pre.src = item.imageUrl;
+      });
+
+      playlist = slides;
+      if (!timer && playlist.length > 0) rotate();
+    }, (err) => {
+      console.warn("Snapshot error (network jitter); running on memory buffer:", err);
+    });
+
+    function rotate() {
+      if (playlist.length === 0) {
+        timer = null;
+        imgEl.style.opacity = '0';
+        return;
+      }
+
+      const item = playlist[currentIndex];
+      imgEl.style.opacity = '0';
+      setTimeout(() => {
+        imgEl.src = item.imageUrl;
+        imgEl.style.opacity = '1';
+      }, 500);
+
+      currentIndex = (currentIndex + 1) % playlist.length;
+      timer = setTimeout(rotate, (item.duration || 10) * 1000);
+    }
+
+    // Daily 3:00 AM clean refresh to clear browser RAM
+    setInterval(() => {
+      const now = new Date();
+      if (now.getHours() === 3 && now.getMinutes() === 0) window.location.reload();
+    }, 60000);
+  </script>
+</body>
+</html>
