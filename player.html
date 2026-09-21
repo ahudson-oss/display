@@ -81,6 +81,7 @@ setInterval(sendHeartbeat, 60000);
       });
 
       playlist = slides;
+      if (currentIndex >= playlist.length) currentIndex = 0;
       if (!timer && playlist.length > 0) rotate();
     }, (err) => {
       console.warn("Snapshot error (network jitter); running on memory buffer:", err);
