@@ -6,7 +6,7 @@
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 2rem; max-width: 850px; margin: auto; background: #f1f5f9; color: #0f172a; }
     .card { background: white; border-radius: 8px; padding: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 1.5rem; }
-    input, button { padding: 0.6rem 0.8rem; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 0.9rem; }
+    input, select, button { padding: 0.6rem 0.8rem; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 0.9rem; }
     button { background: #2563eb; color: white; border: none; cursor: pointer; font-weight: 500; }
     button:hover { background: #1d4ed8; }
     table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 2rem; }
@@ -30,6 +30,15 @@
     tr.dragging { opacity: 0.4; background: #e0f2fe; }
     tr.drag-over { border-top: 3px solid #2563eb; }
     .drag-handle { color: #94a3b8; font-size: 1.2rem; cursor: grab; padding-right: 0.5rem; }
+
+    /* Channel tabs */
+    .channel-tabs { display: flex; gap: 0.5rem; margin-bottom: 1.25rem; }
+    .channel-tab {
+      background: white; color: #475569; border: 1px solid #cbd5e1;
+      padding: 0.55rem 1.1rem; border-radius: 9999px; font-weight: 500; cursor: pointer;
+    }
+    .channel-tab:hover { background: #f1f5f9; }
+    .channel-tab.active-tab { background: #2563eb; color: white; border-color: #2563eb; }
   </style>
 </head>
 <body>
@@ -53,20 +62,34 @@
       <button id="logoutBtn" class="secondary-btn">Log Out</button>
     </div>
 
+    <!-- Channel Tabs: switch which TV feed you're managing. Slides saved before this
+         existed have no channel field and are treated as "hallway" everywhere below. -->
+    <div class="channel-tabs" id="channelTabs">
+      <button class="channel-tab active-tab" data-channel="hallway">Hallway TVs</button>
+      <button class="channel-tab" data-channel="lunch">Lunch TV</button>
+    </div>
+
     <!-- Upload Card -->
     <div class="card">
       <h3>Upload New Slide</h3>
       <div class="flex-row">
         <input type="text" id="slideTitle" placeholder="Slide Title (e.g., Friday Pep Rally)" style="flex: 2;">
         <input type="number" id="slideDuration" placeholder="Secs" value="10" style="width: 80px;">
+        <select id="slideChannel" style="width: 140px;">
+          <option value="hallway">Hallway TVs</option>
+          <option value="lunch">Lunch TV</option>
+        </select>
         <input type="file" id="slideFile" accept="image/*">
         <button id="uploadBtn">Upload to Active</button>
       </div>
+      <p style="font-size: 0.8rem; color: #64748b; margin-top: 0.6rem;">
+        Defaults to whichever tab is selected above — change the dropdown to send a slide to the other feed instead.
+      </p>
     </div>
 
     <!-- Active Slides Table -->
     <div style="display: flex; justify-content: space-between; align-items: baseline;">
-      <h3>Currently on Displays (Active Rotation)</h3>
+      <h3 id="activeTableHeading">Currently on Hallway TVs (Active Rotation)</h3>
       <span style="font-size: 0.85rem; color: #64748b;">Drag any row to reorder</span>
     </div>
     <table>
@@ -88,6 +111,7 @@
       <summary>Saved Slide Library (Archived / Recurring)</summary>
       <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 1rem;">
         These slides stay saved in your cloud storage. Click "Add to Rotation" to push them live to the TVs at any time.
+        Only showing slides for the tab selected above.
       </p>
       <table>
         <thead>
@@ -105,10 +129,12 @@
 
     <!-- Live Screen Monitoring Table -->
     <h3 style="margin-top: 2rem;">Screen Health & Status</h3>
+    <p style="font-size: 0.85rem; color: #64748b; margin: 0.25rem 0 0.75rem 0;">Shows every screen reporting in, across both channels.</p>
     <table>
       <thead>
         <tr>
           <th>Screen ID</th>
+          <th>Channel</th>
           <th>Status</th>
           <th>Last Seen</th>
           <th>Current Slide</th>
@@ -120,11 +146,11 @@
 
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-    import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } 
+    import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged }
       from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-    import { getFirestore, collection, doc, addDoc, updateDoc, deleteDoc, onSnapshot, writeBatch, serverTimestamp } 
+    import { getFirestore, collection, doc, addDoc, updateDoc, deleteDoc, onSnapshot, writeBatch, serverTimestamp }
       from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
-    import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } 
+    import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject }
       from "https://www.gstatic.com/firebasejs/10.8.0/firebase-storage.js";
 
     const firebaseConfig = {
@@ -142,7 +168,10 @@
     const db = getFirestore(app);
     const storage = getStorage(app);
 
-    let activeSlidesCache = [];
+    const CHANNEL_LABELS = { hallway: 'Hallway TVs', lunch: 'Lunch TV' };
+    let currentChannel = 'hallway';
+    let allSlidesCache = [];      // every slide doc from the last snapshot, unfiltered
+    let activeSlidesCache = [];   // active slides for the CURRENT channel tab, in order
     let draggedRow = null;
 
     // Auth Handling
@@ -171,145 +200,168 @@
       }
     });
 
+    // Channel Tabs
+    document.getElementById('channelTabs').addEventListener('click', (e) => {
+      const btn = e.target.closest('.channel-tab');
+      if (!btn) return;
+      currentChannel = btn.dataset.channel;
+
+      document.querySelectorAll('.channel-tab').forEach(t => t.classList.remove('active-tab'));
+      btn.classList.add('active-tab');
+      document.getElementById('activeTableHeading').innerText =
+        `Currently on ${CHANNEL_LABELS[currentChannel]} (Active Rotation)`;
+      document.getElementById('slideChannel').value = currentChannel;
+
+      renderSlideTables();
+    });
+
     // Real-Time Slide Management & Sorting
     function listenToSlides() {
       onSnapshot(collection(db, "slides"), (snapshot) => {
-        const activeTbody = document.getElementById('activeSlideTableBody');
-        const libraryTbody = document.getElementById('libraryTableBody');
-        activeTbody.innerHTML = '';
-        libraryTbody.innerHTML = '';
-
-        const activeList = [];
-        const libraryList = [];
-
-        snapshot.forEach((snapDoc) => {
-          const item = { id: snapDoc.id, ...snapDoc.data() };
-          if (item.active !== false) {
-            activeList.push(item);
-          } else {
-            libraryList.push(item);
-          }
-        });
-
-        // Sort active slides in memory based on 'order' field
-        activeList.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-        activeSlidesCache = activeList;
-
-        // Render Active Slides with Drag attributes
-        activeList.forEach((slide, index) => {
-          const tr = document.createElement('tr');
-          tr.className = 'draggable-row';
-          tr.draggable = true;
-          tr.dataset.id = slide.id;
-          tr.dataset.index = index;
-
-          tr.innerHTML = `
-            <td><span class="drag-handle">☰</span></td>
-            <td><img src="${slide.imageUrl}" class="thumb"></td>
-            <td><strong>${slide.title}</strong></td>
-            <td>${slide.duration}s</td>
-            <td>
-              <button class="secondary-btn" data-archive="${slide.id}">Move to Library</button>
-            </td>
-            <td>
-              <button class="danger-btn" data-delete="${slide.id}" data-path="${slide.storagePath}">Delete</button>
-            </td>
-          `;
-
-          // Drag Events
-          tr.addEventListener('dragstart', (e) => {
-            draggedRow = tr;
-            tr.classList.add('dragging');
-            e.dataTransfer.effectAllowed = 'move';
-          });
-
-          tr.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = 'move';
-            tr.classList.add('drag-over');
-          });
-
-          tr.addEventListener('dragleave', () => {
-            tr.classList.remove('drag-over');
-          });
-
-          tr.addEventListener('drop', async (e) => {
-            e.preventDefault();
-            tr.classList.remove('drag-over');
-            if (draggedRow === tr) return;
-
-            const fromIndex = parseInt(draggedRow.dataset.index);
-            const toIndex = parseInt(tr.dataset.index);
-
-            // Reorder array in memory
-            const reordered = [...activeSlidesCache];
-            const [movedItem] = reordered.splice(fromIndex, 1);
-            reordered.splice(toIndex, 0, movedItem);
-
-            // Batch commit the new sequential orders to Firestore
-            const batch = writeBatch(db);
-            reordered.forEach((item, idx) => {
-              batch.update(doc(db, "slides", item.id), { order: idx });
-            });
-            await batch.commit();
-          });
-
-          tr.addEventListener('dragend', () => {
-            tr.classList.remove('dragging');
-            document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
-            draggedRow = null;
-          });
-
-          activeTbody.appendChild(tr);
-        });
-
-        // Render Library Slides
-        libraryList.forEach((slide) => {
-          const tr = document.createElement('tr');
-          tr.innerHTML = `
-            <td><img src="${slide.imageUrl}" class="thumb"></td>
-            <td><strong>${slide.title}</strong></td>
-            <td>${slide.duration}s</td>
-            <td>
-              <button class="success-btn" data-activate="${slide.id}">Add to Rotation</button>
-            </td>
-            <td>
-              <button class="danger-btn" data-delete="${slide.id}" data-path="${slide.storagePath}">Delete</button>
-            </td>
-          `;
-          libraryTbody.appendChild(tr);
-        });
-
-        // Button Action Listeners
-        document.querySelectorAll('[data-archive]').forEach(btn => {
-          btn.onclick = () => updateDoc(doc(db, "slides", btn.dataset.archive), { active: false });
-        });
-
-        document.querySelectorAll('[data-activate]').forEach(btn => {
-          btn.onclick = () => {
-            // When restored, append to the end of the current order
-            const nextOrder = activeSlidesCache.length;
-            updateDoc(doc(db, "slides", btn.dataset.activate), { 
-              active: true, 
-              order: nextOrder 
-            });
-          };
-        });
-
-        document.querySelectorAll('[data-delete]').forEach(btn => {
-          btn.onclick = async () => {
-            if (!confirm('Permanently delete this slide from the database and storage?')) return;
-            await deleteDoc(doc(db, "slides", btn.dataset.delete));
-            if (btn.dataset.path) {
-              const fileRef = ref(storage, btn.dataset.path);
-              deleteObject(fileRef).catch(e => console.warn(e));
-            }
-          };
-        });
+        const all = [];
+        snapshot.forEach((snapDoc) => all.push({ id: snapDoc.id, ...snapDoc.data() }));
+        allSlidesCache = all;
+        renderSlideTables();
       });
     }
 
-    // Screens Heartbeat Monitor
+    // Renders both tables from allSlidesCache, filtered to currentChannel.
+    // Called on every snapshot AND every tab switch, so it never touches Firestore itself.
+    function renderSlideTables() {
+      const activeTbody = document.getElementById('activeSlideTableBody');
+      const libraryTbody = document.getElementById('libraryTableBody');
+      activeTbody.innerHTML = '';
+      libraryTbody.innerHTML = '';
+
+      // Slides saved before the channel field existed are treated as "hallway"
+      // so nothing already on the hallway TVs quietly vanishes from this dashboard.
+      const channelSlides = allSlidesCache.filter(item => (item.channel || 'hallway') === currentChannel);
+
+      const activeList = [];
+      const libraryList = [];
+      channelSlides.forEach((item) => {
+        if (item.active !== false) activeList.push(item);
+        else libraryList.push(item);
+      });
+
+      // Sort active slides in memory based on 'order' field
+      activeList.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      activeSlidesCache = activeList;
+
+      // Render Active Slides with Drag attributes
+      activeList.forEach((slide, index) => {
+        const tr = document.createElement('tr');
+        tr.className = 'draggable-row';
+        tr.draggable = true;
+        tr.dataset.id = slide.id;
+        tr.dataset.index = index;
+
+        tr.innerHTML = `
+          <td><span class="drag-handle">☰</span></td>
+          <td><img src="${slide.imageUrl}" class="thumb"></td>
+          <td><strong>${slide.title}</strong></td>
+          <td>${slide.duration}s</td>
+          <td>
+            <button class="secondary-btn" data-archive="${slide.id}">Move to Library</button>
+          </td>
+          <td>
+            <button class="danger-btn" data-delete="${slide.id}" data-path="${slide.storagePath}">Delete</button>
+          </td>
+        `;
+
+        // Drag Events
+        tr.addEventListener('dragstart', (e) => {
+          draggedRow = tr;
+          tr.classList.add('dragging');
+          e.dataTransfer.effectAllowed = 'move';
+        });
+
+        tr.addEventListener('dragover', (e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          tr.classList.add('drag-over');
+        });
+
+        tr.addEventListener('dragleave', () => {
+          tr.classList.remove('drag-over');
+        });
+
+        tr.addEventListener('drop', async (e) => {
+          e.preventDefault();
+          tr.classList.remove('drag-over');
+          if (draggedRow === tr) return;
+
+          const fromIndex = parseInt(draggedRow.dataset.index);
+          const toIndex = parseInt(tr.dataset.index);
+
+          // Reorder array in memory (this channel's active list only)
+          const reordered = [...activeSlidesCache];
+          const [movedItem] = reordered.splice(fromIndex, 1);
+          reordered.splice(toIndex, 0, movedItem);
+
+          // Batch commit the new sequential orders to Firestore
+          const batch = writeBatch(db);
+          reordered.forEach((item, idx) => {
+            batch.update(doc(db, "slides", item.id), { order: idx });
+          });
+          await batch.commit();
+        });
+
+        tr.addEventListener('dragend', () => {
+          tr.classList.remove('dragging');
+          document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+          draggedRow = null;
+        });
+
+        activeTbody.appendChild(tr);
+      });
+
+      // Render Library Slides
+      libraryList.forEach((slide) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><img src="${slide.imageUrl}" class="thumb"></td>
+          <td><strong>${slide.title}</strong></td>
+          <td>${slide.duration}s</td>
+          <td>
+            <button class="success-btn" data-activate="${slide.id}">Add to Rotation</button>
+          </td>
+          <td>
+            <button class="danger-btn" data-delete="${slide.id}" data-path="${slide.storagePath}">Delete</button>
+          </td>
+        `;
+        libraryTbody.appendChild(tr);
+      });
+
+      // Button Action Listeners
+      document.querySelectorAll('[data-archive]').forEach(btn => {
+        btn.onclick = () => updateDoc(doc(db, "slides", btn.dataset.archive), { active: false });
+      });
+
+      document.querySelectorAll('[data-activate]').forEach(btn => {
+        btn.onclick = () => {
+          // When restored, append to the end of the current channel's order
+          const nextOrder = activeSlidesCache.length;
+          updateDoc(doc(db, "slides", btn.dataset.activate), {
+            active: true,
+            order: nextOrder
+          });
+        };
+      });
+
+      document.querySelectorAll('[data-delete]').forEach(btn => {
+        btn.onclick = async () => {
+          if (!confirm('Permanently delete this slide from the database and storage?')) return;
+          await deleteDoc(doc(db, "slides", btn.dataset.delete));
+          if (btn.dataset.path) {
+            const fileRef = ref(storage, btn.dataset.path);
+            deleteObject(fileRef).catch(e => console.warn(e));
+          }
+        };
+      });
+    }
+
+    // Screens Heartbeat Monitor (shows every screen, both channels)
     function listenToScreens() {
       onSnapshot(collection(db, "screens"), (snapshot) => {
         const tbody = document.getElementById('screenTableBody');
@@ -321,10 +373,12 @@
           const lastSeenMs = screen.lastSeen ? screen.lastSeen.toMillis() : 0;
           const diffMinutes = Math.round((now - lastSeenMs) / 60000);
           const isOnline = lastSeenMs > 0 && diffMinutes < 3;
+          const channelLabel = CHANNEL_LABELS[screen.channel] || 'Hallway TVs';
 
           const tr = document.createElement('tr');
           tr.innerHTML = `
             <td><strong>${snapDoc.id}</strong></td>
+            <td>${channelLabel}</td>
             <td>
               <span class="badge" style="background: ${isOnline ? '#10b981' : '#ef4444'};">
                 ${isOnline ? 'Online' : 'Offline'}
@@ -340,11 +394,12 @@
       });
     }
 
-    // Upload New Slide to Active
+    // Upload New Slide to Active (tagged with whichever channel is selected in the dropdown)
     document.getElementById('uploadBtn').addEventListener('click', async () => {
       const file = document.getElementById('slideFile').files[0];
       const title = document.getElementById('slideTitle').value.trim() || "Untitled Slide";
       const duration = parseInt(document.getElementById('slideDuration').value) || 10;
+      const uploadChannel = document.getElementById('slideChannel').value;
       const btn = document.getElementById('uploadBtn');
 
       if (!file) return alert("Select an image first.");
@@ -355,17 +410,24 @@
       try {
         const storagePath = `slides/${Date.now()}_${file.name.replace(/\s+/g, '_')}`;
         const fileRef = ref(storage, storagePath);
-        
+
         await uploadBytes(fileRef, file);
         const imageUrl = await getDownloadURL(fileRef);
+
+        // Order is scoped to the slide's own channel, not the whole collection,
+        // so hallway and lunch each keep their own independent rotation order.
+        const channelActiveCount = allSlidesCache.filter(
+          s => (s.channel || 'hallway') === uploadChannel && s.active !== false
+        ).length;
 
         await addDoc(collection(db, "slides"), {
           title,
           duration,
           imageUrl,
           storagePath,
+          channel: uploadChannel,
           active: true,
-          order: activeSlidesCache.length, // Placed at the end of the playlist
+          order: channelActiveCount,
           createdAt: serverTimestamp()
         });
 
