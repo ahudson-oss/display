@@ -21,20 +21,24 @@
   <!-- Firebase Modular SDK -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-    import { getFirestore, collection, query, where, onSnapshot } 
+    import { getFirestore, collection, query, where, onSnapshot }
       from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
-   
+
     import { doc, setDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
-// Read ?screen=Name from the TV's configured URL Launcher address
+// Read ?screen=Name and ?channel=Name from the TV's configured URL Launcher address.
+// channel defaults to "hallway" so every existing TV URL (with no ?channel= at all)
+// keeps behaving exactly like it does today — nothing to reconfigure on the 8 hallway TVs.
 const urlParams = new URLSearchParams(window.location.search);
 const screenId = urlParams.get('screen') || 'TV-Default';
+const channel = urlParams.get('channel') || 'hallway';
 
 async function sendHeartbeat() {
   try {
     await setDoc(doc(db, "screens", screenId), {
       lastSeen: serverTimestamp(),
       currentSlide: playlist[currentIndex]?.title || 'None',
+      channel,
       status: 'online'
     }, { merge: true });
   } catch (err) {
@@ -65,22 +69,29 @@ setInterval(sendHeartbeat, 60000);
     let timer = null;
     const imgEl = document.getElementById('slide');
 
-    // Realtime Listener: updates instantly whenever a slide is added, edited, or deleted
+    // Realtime Listener: updates instantly whenever a slide is added, edited, or deleted.
+    // Still just one where() clause (active) so no new Firestore composite index is needed —
+    // the channel filter happens client-side below, which also means slides saved before the
+    // channel field existed are treated as "hallway" instead of silently disappearing.
     const q = query(collection(db, "slides"), where("active", "==", true));
     onSnapshot(q, (snapshot) => {
       const slides = [];
       snapshot.forEach(doc => slides.push({ id: doc.id, ...doc.data() }));
-      
+
+      // Keep only this screen's channel. Legacy slides with no channel field
+      // are treated as "hallway" so nothing already live disappears.
+      const channelSlides = slides.filter(item => (item.channel || 'hallway') === channel);
+
       // Sort in memory by order or title
-      slides.sort((a, b) => (a.order || 0) - (b.order || 0));
+      channelSlides.sort((a, b) => (a.order || 0) - (b.order || 0));
 
       // Preload images into memory so slow networks never flash a white screen
-      slides.forEach(item => {
+      channelSlides.forEach(item => {
         const pre = new Image();
         pre.src = item.imageUrl;
       });
 
-      playlist = slides;
+      playlist = channelSlides;
       if (currentIndex >= playlist.length) currentIndex = 0;
       if (!timer && playlist.length > 0) rotate();
     }, (err) => {
