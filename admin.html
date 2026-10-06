@@ -32,7 +32,7 @@
     .drag-handle { color: #94a3b8; font-size: 1.2rem; cursor: grab; padding-right: 0.5rem; }
 
     /* Channel tabs */
-    .channel-tabs { display: flex; gap: 0.5rem; margin-bottom: 1.25rem; }
+    .channel-tabs { display: flex; gap: 0.5rem; margin-bottom: 1.25rem; flex-wrap: wrap; }
     .channel-tab {
       background: white; color: #475569; border: 1px solid #cbd5e1;
       padding: 0.55rem 1.1rem; border-radius: 9999px; font-weight: 500; cursor: pointer;
@@ -63,10 +63,13 @@
     </div>
 
     <!-- Channel Tabs: switch which TV feed you're managing. Slides saved before this
-         existed have no channel field and are treated as "hallway" everywhere below. -->
+         existed have no channel field and are treated as "hallway" everywhere below.
+         To add a channel: add a tab here, an <option> in #slideChannel, and a label in CHANNEL_LABELS. -->
     <div class="channel-tabs" id="channelTabs">
       <button class="channel-tab active-tab" data-channel="hallway">Hallway TVs</button>
       <button class="channel-tab" data-channel="lunch">Lunch TV</button>
+      <button class="channel-tab" data-channel="office">Office Displays</button>
+      <button class="channel-tab" data-channel="activities">Activities</button>
     </div>
 
     <!-- Upload Card -->
@@ -75,15 +78,17 @@
       <div class="flex-row">
         <input type="text" id="slideTitle" placeholder="Slide Title (e.g., Friday Pep Rally)" style="flex: 2;">
         <input type="number" id="slideDuration" placeholder="Secs" value="10" style="width: 80px;">
-        <select id="slideChannel" style="width: 140px;">
+        <select id="slideChannel" style="width: 160px;">
           <option value="hallway">Hallway TVs</option>
           <option value="lunch">Lunch TV</option>
+          <option value="office">Office Displays</option>
+          <option value="activities">Activities</option>
         </select>
         <input type="file" id="slideFile" accept="image/*">
         <button id="uploadBtn">Upload to Active</button>
       </div>
       <p style="font-size: 0.8rem; color: #64748b; margin-top: 0.6rem;">
-        Defaults to whichever tab is selected above — change the dropdown to send a slide to the other feed instead.
+        Defaults to whichever tab is selected above — change the dropdown to send a slide to a different feed instead.
       </p>
     </div>
 
@@ -129,7 +134,7 @@
 
     <!-- Live Screen Monitoring Table -->
     <h3 style="margin-top: 2rem;">Screen Health & Status</h3>
-    <p style="font-size: 0.85rem; color: #64748b; margin: 0.25rem 0 0.75rem 0;">Shows every screen reporting in, across both channels.</p>
+    <p style="font-size: 0.85rem; color: #64748b; margin: 0.25rem 0 0.75rem 0;">Shows every screen reporting in, across all channels.</p>
     <table>
       <thead>
         <tr>
@@ -168,7 +173,12 @@
     const db = getFirestore(app);
     const storage = getStorage(app);
 
-    const CHANNEL_LABELS = { hallway: 'Hallway TVs', lunch: 'Lunch TV' };
+    const CHANNEL_LABELS = {
+      hallway: 'Hallway TVs',
+      lunch: 'Lunch TV',
+      office: 'Office Displays',
+      activities: 'Activities'
+    };
     let currentChannel = 'hallway';
     let allSlidesCache = [];      // every slide doc from the last snapshot, unfiltered
     let activeSlidesCache = [];   // active slides for the CURRENT channel tab, in order
@@ -361,7 +371,7 @@
       });
     }
 
-    // Screens Heartbeat Monitor (shows every screen, both channels)
+    // Screens Heartbeat Monitor (shows every screen, all channels)
     function listenToScreens() {
       onSnapshot(collection(db, "screens"), (snapshot) => {
         const tbody = document.getElementById('screenTableBody');
@@ -415,7 +425,7 @@
         const imageUrl = await getDownloadURL(fileRef);
 
         // Order is scoped to the slide's own channel, not the whole collection,
-        // so hallway and lunch each keep their own independent rotation order.
+        // so each channel keeps its own independent rotation order.
         const channelActiveCount = allSlidesCache.filter(
           s => (s.channel || 'hallway') === uploadChannel && s.active !== false
         ).length;
