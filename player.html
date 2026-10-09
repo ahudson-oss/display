@@ -6,51 +6,28 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; cursor: none; }
     body, html { width: 100vw; height: 100vh; overflow: hidden; background: #000; }
-    #slide {
-      width: 100%;
-      height: 100%;
+    #stage { position: relative; width: 100%; height: 100%; }
+    /* Every slide (image or video) is a layer stacked on top of the last one.
+       The new layer fades IN over the old one, which stays fully visible underneath,
+       so the screen never passes through black. */
+    .layer {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
       object-fit: contain;
-      opacity: 1;
-      transition: opacity 0.5s ease-in-out;
+      opacity: 0;
+      transition: opacity 0.8s ease-in-out;
     }
+    .layer.show { opacity: 1; }
   </style>
 </head>
 <body>
-  <img id="slide" alt="" />
+  <div id="stage"></div>
 
-  <!-- Firebase Modular SDK -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-    import { getFirestore, collection, query, where, onSnapshot }
+    import { getFirestore, collection, query, where, onSnapshot, doc, setDoc, serverTimestamp }
       from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
-    import { doc, setDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
-
-// Read ?screen=Name and ?channel=Name from the TV's configured URL Launcher address.
-// channel defaults to "hallway" so every existing TV URL (with no ?channel= at all)
-// keeps behaving exactly like it does today — nothing to reconfigure on the 8 hallway TVs.
-const urlParams = new URLSearchParams(window.location.search);
-const screenId = urlParams.get('screen') || 'TV-Default';
-const channel = urlParams.get('channel') || 'hallway';
-
-async function sendHeartbeat() {
-  try {
-    await setDoc(doc(db, "screens", screenId), {
-      lastSeen: serverTimestamp(),
-      currentSlide: playlist[currentIndex]?.title || 'None',
-      channel,
-      status: 'online'
-    }, { merge: true });
-  } catch (err) {
-    console.warn("Heartbeat failed (offline or network blip):", err);
-  }
-}
-
-// Send initial ping, then ping every 60 seconds
-sendHeartbeat();
-setInterval(sendHeartbeat, 60000);
-
-  // PASTE YOUR CONFIG HERE
     const firebaseConfig = {
       apiKey: "AIzaSyAjkJ_PuIuFadQglmJO80_bKePxyPTJMyI",
       authDomain: "prep-signage-c24e9.firebaseapp.com",
@@ -64,56 +41,156 @@ setInterval(sendHeartbeat, 60000);
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
 
+    // ?screen=Name and ?channel=Name from the TV's URL. channel defaults to "hallway".
+    const urlParams = new URLSearchParams(window.location.search);
+    const screenId = urlParams.get('screen') || 'TV-Default';
+    const channel = urlParams.get('channel') || 'hallway';
+
+    const FADE_MS = 800;          // keep in sync with the CSS transition
+    const LOAD_TIMEOUT_MS = 20000; // skip a slide that won't load instead of freezing
+
+    const stage = document.getElementById('stage');
     let playlist = [];
     let currentIndex = 0;
+    let current = null;      // the layer currently on screen
     let timer = null;
-    const imgEl = document.getElementById('slide');
+    let running = false;
+    let nowShowing = 'None';
 
-    // Realtime Listener: updates instantly whenever a slide is added, edited, or deleted.
-    // Still just one where() clause (active) so no new Firestore composite index is needed —
-    // the channel filter happens client-side below, which also means slides saved before the
-    // channel field existed are treated as "hallway" instead of silently disappearing.
+    // ---------- Heartbeat (moved below db so the first ping doesn't fail) ----------
+    async function sendHeartbeat() {
+      try {
+        await setDoc(doc(db, "screens", screenId), {
+          lastSeen: serverTimestamp(),
+          currentSlide: nowShowing,
+          channel,
+          status: 'online'
+        }, { merge: true });
+      } catch (err) {
+        console.warn("Heartbeat failed (offline or network blip):", err);
+      }
+    }
+    sendHeartbeat();
+    setInterval(sendHeartbeat, 60000);
+
+    // ---------- Realtime playlist ----------
     const q = query(collection(db, "slides"), where("active", "==", true));
     onSnapshot(q, (snapshot) => {
       const slides = [];
-      snapshot.forEach(doc => slides.push({ id: doc.id, ...doc.data() }));
+      snapshot.forEach(d => slides.push({ id: d.id, ...d.data() }));
 
-      // Keep only this screen's channel. Legacy slides with no channel field
-      // are treated as "hallway" so nothing already live disappears.
       const channelSlides = slides.filter(item => (item.channel || 'hallway') === channel);
-
-      // Sort in memory by order or title
       channelSlides.sort((a, b) => (a.order || 0) - (b.order || 0));
 
-      // Preload images into memory so slow networks never flash a white screen
+      // Warm the cache for images (videos load when their turn comes)
       channelSlides.forEach(item => {
-        const pre = new Image();
-        pre.src = item.imageUrl;
+        if (item.type !== 'video') { const pre = new Image(); pre.src = item.imageUrl; }
       });
 
       playlist = channelSlides;
       if (currentIndex >= playlist.length) currentIndex = 0;
-      if (!timer && playlist.length > 0) rotate();
+      if (!running && playlist.length > 0) { running = true; showNext(); }
     }, (err) => {
       console.warn("Snapshot error (network jitter); running on memory buffer:", err);
     });
 
-    function rotate() {
+    // ---------- Building and loading a layer ----------
+    // Note: the Firestore field is still called imageUrl for videos too, so old slides need no migration.
+    function makeLayer(item) {
+      const isVideo = item.type === 'video';
+      const el = document.createElement(isVideo ? 'video' : 'img');
+      el.className = 'layer';
+      el.dataset.key = item.id + '|' + item.imageUrl;
+      if (isVideo) {
+        // TV browsers only autoplay muted video
+        el.muted = true; el.setAttribute('muted', '');
+        el.playsInline = true; el.setAttribute('playsinline', '');
+        el.preload = 'auto';
+      }
+      el.src = item.imageUrl;
+      return el;
+    }
+
+    function whenReady(el) {
+      return new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('load timeout')), LOAD_TIMEOUT_MS);
+        const ok = () => { clearTimeout(t); resolve(); };
+        const bad = () => { clearTimeout(t); reject(new Error('load error')); };
+        if (el.tagName === 'VIDEO') {
+          el.addEventListener('canplay', ok, { once: true });
+          el.addEventListener('error', bad, { once: true });
+        } else {
+          if (el.complete && el.naturalWidth) return ok();
+          el.addEventListener('load', ok, { once: true });
+          el.addEventListener('error', bad, { once: true });
+        }
+      });
+    }
+
+    function removeLayer(el) {
+      if (el.tagName === 'VIDEO') { el.pause(); el.removeAttribute('src'); el.load(); } // frees TV memory
+      el.remove();
+    }
+
+    // ---------- When to move on ----------
+    function scheduleAdvance(el, item) {
+      clearTimeout(timer);
+      if (el.tagName === 'VIDEO') {
+        let done = false;
+        const advance = () => { if (done) return; done = true; clearTimeout(timer); showNext(); };
+        el.addEventListener('ended', advance, { once: true });
+        el.addEventListener('error', advance, { once: true });
+        // Safety net in case 'ended' never fires (stalled stream): full length + 5s
+        const len = isFinite(el.duration) && el.duration > 0 ? el.duration : 120;
+        timer = setTimeout(advance, (len + 5) * 1000);
+      } else {
+        timer = setTimeout(showNext, (item.duration || 10) * 1000);
+      }
+    }
+
+    // ---------- Main loop ----------
+    async function showNext() {
+      clearTimeout(timer);
+
       if (playlist.length === 0) {
-        timer = null;
-        imgEl.style.opacity = '0';
+        if (current) { const old = current; old.classList.remove('show'); setTimeout(() => removeLayer(old), FADE_MS + 100); }
+        current = null; nowShowing = 'None'; running = false;
         return;
       }
 
+      if (currentIndex >= playlist.length) currentIndex = 0;
       const item = playlist[currentIndex];
-      imgEl.style.opacity = '0';
-      setTimeout(() => {
-        imgEl.src = item.imageUrl;
-        imgEl.style.opacity = '1';
-      }, 500);
-
       currentIndex = (currentIndex + 1) % playlist.length;
-      timer = setTimeout(rotate, (item.duration || 10) * 1000);
+      const key = item.id + '|' + item.imageUrl;
+
+      // Only one slide in the rotation: reuse what's on screen (replay if it's a video)
+      if (current && current.dataset.key === key) {
+        if (current.tagName === 'VIDEO') { current.currentTime = 0; current.play().catch(() => {}); }
+        scheduleAdvance(current, item);
+        return;
+      }
+
+      const next = makeLayer(item);
+      stage.appendChild(next); // sits on top, invisible until ready
+
+      try {
+        await whenReady(next);
+        if (next.tagName === 'VIDEO') await next.play().catch(e => console.warn('Autoplay blocked:', e));
+      } catch (e) {
+        console.warn('Skipping slide that failed to load:', item.title, e);
+        removeLayer(next);
+        timer = setTimeout(showNext, 1000);
+        return;
+      }
+
+      // Fade the new layer in over the old one, then clean up the old one
+      next.classList.add('show');
+      const old = current;
+      current = next;
+      nowShowing = item.title || 'Untitled';
+      if (old) setTimeout(() => removeLayer(old), FADE_MS + 100);
+
+      scheduleAdvance(next, item);
     }
 
     // Daily 3:00 AM clean refresh to clear browser RAM
