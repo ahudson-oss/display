@@ -83,11 +83,13 @@
           <option value="office">Office Displays</option>
           <option value="activities">Activities</option>
         </select>
-        <input type="file" id="slideFile" accept="image/*,video/mp4,video/webm">
+        <input type="file" id="slideFile" accept="image/*,video/mp4,video/webm" multiple>
         <button id="uploadBtn">Upload to Active</button>
       </div>
       <p style="font-size: 0.8rem; color: #64748b; margin-top: 0.6rem;">
-        Defaults to whichever tab is selected above. Videos: MP4, muted, under ~60 seconds — they play all the way through, so "Secs" is ignored.
+        Defaults to whichever tab is selected above. You can select several files at once — they're added in filename order
+        (Slide1, Slide2, … Slide10). With several files, the title box becomes a prefix ("Pep Rally" → "Pep Rally 1", "Pep Rally 2"),
+        or leave it blank to use the file names. Videos: MP4, muted, under ~30 seconds — they play all the way through, so "Secs" is ignored.
       </p>
     </div>
 
@@ -416,64 +418,81 @@
       });
     }
 
-    // Upload New Slide (image or video)
+    // Upload one or many slides (images or videos), added to the rotation in filename order
     document.getElementById('uploadBtn').addEventListener('click', async () => {
-      const file = document.getElementById('slideFile').files[0];
-      const title = document.getElementById('slideTitle').value.trim() || "Untitled Slide";
-      let duration = parseInt(document.getElementById('slideDuration').value) || 10;
+      // Natural sort so "Slide10" comes after "Slide9", not after "Slide1"
+      const files = [...document.getElementById('slideFile').files]
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+      const titleInput = document.getElementById('slideTitle').value.trim();
+      const imageDuration = parseInt(document.getElementById('slideDuration').value) || 10;
       const uploadChannel = document.getElementById('slideChannel').value;
       const btn = document.getElementById('uploadBtn');
 
-      if (!file) return alert("Select an image or video first.");
+      if (files.length === 0) return alert("Select at least one image or video first.");
 
-      const isVideo = file.type.startsWith('video/');
-      if (isVideo) {
-        if (file.type !== 'video/mp4' && file.type !== 'video/webm') {
-          return alert("Please export the video as an MP4 first (iPhone .mov files often won't play on the TVs).");
-        }
-        const mb = file.size / (1024 * 1024);
-        if (mb > MAX_VIDEO_MB && !confirm(`This video is ${mb.toFixed(0)} MB. Large videos load slowly on the TVs. Upload anyway?`)) return;
-        duration = await getVideoLength(file); // for the dashboard; the player uses the real length
+      // Check every file up front so a bad one doesn't stop a batch halfway through
+      const blocked = files.filter(f => f.type.startsWith('video/') && f.type !== 'video/mp4' && f.type !== 'video/webm');
+      if (blocked.length) {
+        return alert("Please export these as MP4 first (iPhone .mov files often won't play on the TVs):\n" +
+          blocked.map(f => f.name).join('\n'));
       }
+      const bigVideos = files.filter(f => f.type.startsWith('video/') && f.size / (1024 * 1024) > MAX_VIDEO_MB);
+      if (bigVideos.length && !confirm(`These videos are over ${MAX_VIDEO_MB} MB and may load slowly on the TVs:\n` +
+          bigVideos.map(f => f.name).join('\n') + "\n\nUpload anyway?")) return;
 
       btn.disabled = true;
-      btn.innerText = "Uploading...";
 
-      try {
-        const storagePath = `slides/${Date.now()}_${file.name.replace(/\s+/g, '_')}`;
-        const fileRef = ref(storage, storagePath);
+      // New slides go after whatever is already active on this channel
+      let nextOrder = allSlidesCache.filter(
+        s => (s.channel || 'hallway') === uploadChannel && s.active !== false
+      ).length;
+      const failed = [];
 
-        // Cache header lets the TVs reuse their downloaded copy instead of re-pulling it every loop
-        await uploadBytes(fileRef, file, {
-          contentType: file.type,
-          cacheControl: 'public, max-age=604800'
-        });
-        const imageUrl = await getDownloadURL(fileRef);
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        btn.innerText = files.length > 1 ? `Uploading ${i + 1} of ${files.length}...` : "Uploading...";
 
-        const channelActiveCount = allSlidesCache.filter(
-          s => (s.channel || 'hallway') === uploadChannel && s.active !== false
-        ).length;
+        const isVideo = file.type.startsWith('video/');
+        const fileBaseName = file.name.replace(/\.[^.]+$/, '');
+        const title = files.length === 1
+          ? (titleInput || fileBaseName)
+          : (titleInput ? `${titleInput} ${i + 1}` : fileBaseName);
 
-        await addDoc(collection(db, "slides"), {
-          title,
-          duration,
-          imageUrl,          // field name kept for videos too, so old slides need no migration
-          type: isVideo ? 'video' : 'image',
-          storagePath,
-          channel: uploadChannel,
-          active: true,
-          order: channelActiveCount,
-          createdAt: serverTimestamp()
-        });
+        try {
+          const duration = isVideo ? await getVideoLength(file) : imageDuration;
+          const storagePath = `slides/${Date.now()}_${i}_${file.name.replace(/\s+/g, '_')}`;
+          const fileRef = ref(storage, storagePath);
 
-        document.getElementById('slideTitle').value = '';
-        document.getElementById('slideFile').value = '';
-      } catch (err) {
-        alert("Upload error: " + err.message);
-      } finally {
-        btn.disabled = false;
-        btn.innerText = "Upload to Active";
+          // Cache header lets the TVs reuse their downloaded copy instead of re-pulling it every loop
+          await uploadBytes(fileRef, file, {
+            contentType: file.type,
+            cacheControl: 'public, max-age=604800'
+          });
+          const imageUrl = await getDownloadURL(fileRef);
+
+          await addDoc(collection(db, "slides"), {
+            title,
+            duration,
+            imageUrl,          // field name kept for videos too, so old slides need no migration
+            type: isVideo ? 'video' : 'image',
+            storagePath,
+            channel: uploadChannel,
+            active: true,
+            order: nextOrder++,
+            createdAt: serverTimestamp()
+          });
+        } catch (err) {
+          console.warn("Upload failed:", file.name, err);
+          failed.push(`${file.name} (${err.message})`);
+        }
       }
+
+      btn.disabled = false;
+      btn.innerText = "Upload to Active";
+      document.getElementById('slideTitle').value = '';
+      document.getElementById('slideFile').value = '';
+
+      if (failed.length) alert(`${files.length - failed.length} of ${files.length} uploaded. These failed:\n` + failed.join('\n'));
     });
   </script>
 </body>
