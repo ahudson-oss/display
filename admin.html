@@ -12,7 +12,7 @@
     table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 2rem; }
     th, td { padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid #e2e8f0; vertical-align: middle; }
     th { background: #f8fafc; font-weight: 600; }
-    .thumb { width: 80px; height: 45px; object-fit: cover; border-radius: 4px; pointer-events: none; }
+    .thumb { width: 80px; height: 45px; object-fit: cover; border-radius: 4px; pointer-events: none; background: #0f172a; }
     .hidden { display: none !important; }
     .flex-row { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; }
     .danger-btn { background: #ef4444; }
@@ -22,6 +22,7 @@
     .success-btn { background: #10b981; }
     .success-btn:hover { background: #059669; }
     .badge { display: inline-block; padding: 0.25rem 0.6rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; color: white; }
+    .type-tag { display: inline-block; margin-left: 0.4rem; padding: 0.1rem 0.45rem; border-radius: 4px; font-size: 0.7rem; font-weight: 600; background: #ede9fe; color: #6d28d9; vertical-align: middle; }
     details summary { font-size: 1.1rem; font-weight: 600; cursor: pointer; padding: 0.5rem 0; margin-bottom: 0.5rem; color: #334155; }
 
     /* Drag and drop styling */
@@ -62,9 +63,7 @@
       <button id="logoutBtn" class="secondary-btn">Log Out</button>
     </div>
 
-    <!-- Channel Tabs: switch which TV feed you're managing. Slides saved before this
-         existed have no channel field and are treated as "hallway" everywhere below.
-         To add a channel: add a tab here, an <option> in #slideChannel, and a label in CHANNEL_LABELS. -->
+    <!-- To add a channel: add a tab here, an <option> in #slideChannel, and a label in CHANNEL_LABELS. -->
     <div class="channel-tabs" id="channelTabs">
       <button class="channel-tab active-tab" data-channel="hallway">Hallway TVs</button>
       <button class="channel-tab" data-channel="lunch">Lunch TV</button>
@@ -84,11 +83,11 @@
           <option value="office">Office Displays</option>
           <option value="activities">Activities</option>
         </select>
-        <input type="file" id="slideFile" accept="image/*">
+        <input type="file" id="slideFile" accept="image/*,video/mp4,video/webm">
         <button id="uploadBtn">Upload to Active</button>
       </div>
       <p style="font-size: 0.8rem; color: #64748b; margin-top: 0.6rem;">
-        Defaults to whichever tab is selected above — change the dropdown to send a slide to a different feed instead.
+        Defaults to whichever tab is selected above. Videos: MP4, muted, under ~60 seconds — they play all the way through, so "Secs" is ignored.
       </p>
     </div>
 
@@ -179,10 +178,37 @@
       office: 'Office Displays',
       activities: 'Activities'
     };
+    const MAX_VIDEO_MB = 40; // bigger files load slowly on TVs and burn Storage download quota
+
     let currentChannel = 'hallway';
-    let allSlidesCache = [];      // every slide doc from the last snapshot, unfiltered
-    let activeSlidesCache = [];   // active slides for the CURRENT channel tab, in order
+    let allSlidesCache = [];
+    let activeSlidesCache = [];
     let draggedRow = null;
+
+    // Preview cell: a still frame for videos, the image otherwise
+    function thumbHtml(slide) {
+      if (slide.type === 'video') {
+        return `<video src="${slide.imageUrl}#t=0.5" class="thumb" muted preload="metadata"></video>`;
+      }
+      return `<img src="${slide.imageUrl}" class="thumb">`;
+    }
+    function titleHtml(slide) {
+      return `<strong>${slide.title}</strong>${slide.type === 'video' ? '<span class="type-tag">VIDEO</span>' : ''}`;
+    }
+    function durationHtml(slide) {
+      return slide.type === 'video' ? `${slide.duration || '?'}s (full video)` : `${slide.duration}s`;
+    }
+
+    // Reads a video file's length locally before upload (for display only)
+    function getVideoLength(file) {
+      return new Promise((resolve) => {
+        const v = document.createElement('video');
+        v.preload = 'metadata';
+        v.onloadedmetadata = () => { URL.revokeObjectURL(v.src); resolve(Math.round(v.duration) || null); };
+        v.onerror = () => resolve(null);
+        v.src = URL.createObjectURL(file);
+      });
+    }
 
     // Auth Handling
     document.getElementById('loginBtn').addEventListener('click', async () => {
@@ -225,7 +251,6 @@
       renderSlideTables();
     });
 
-    // Real-Time Slide Management & Sorting
     function listenToSlides() {
       onSnapshot(collection(db, "slides"), (snapshot) => {
         const all = [];
@@ -235,16 +260,12 @@
       });
     }
 
-    // Renders both tables from allSlidesCache, filtered to currentChannel.
-    // Called on every snapshot AND every tab switch, so it never touches Firestore itself.
     function renderSlideTables() {
       const activeTbody = document.getElementById('activeSlideTableBody');
       const libraryTbody = document.getElementById('libraryTableBody');
       activeTbody.innerHTML = '';
       libraryTbody.innerHTML = '';
 
-      // Slides saved before the channel field existed are treated as "hallway"
-      // so nothing already on the hallway TVs quietly vanishes from this dashboard.
       const channelSlides = allSlidesCache.filter(item => (item.channel || 'hallway') === currentChannel);
 
       const activeList = [];
@@ -254,11 +275,9 @@
         else libraryList.push(item);
       });
 
-      // Sort active slides in memory based on 'order' field
       activeList.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
       activeSlidesCache = activeList;
 
-      // Render Active Slides with Drag attributes
       activeList.forEach((slide, index) => {
         const tr = document.createElement('tr');
         tr.className = 'draggable-row';
@@ -268,9 +287,9 @@
 
         tr.innerHTML = `
           <td><span class="drag-handle">☰</span></td>
-          <td><img src="${slide.imageUrl}" class="thumb"></td>
-          <td><strong>${slide.title}</strong></td>
-          <td>${slide.duration}s</td>
+          <td>${thumbHtml(slide)}</td>
+          <td>${titleHtml(slide)}</td>
+          <td>${durationHtml(slide)}</td>
           <td>
             <button class="secondary-btn" data-archive="${slide.id}">Move to Library</button>
           </td>
@@ -279,7 +298,6 @@
           </td>
         `;
 
-        // Drag Events
         tr.addEventListener('dragstart', (e) => {
           draggedRow = tr;
           tr.classList.add('dragging');
@@ -304,12 +322,10 @@
           const fromIndex = parseInt(draggedRow.dataset.index);
           const toIndex = parseInt(tr.dataset.index);
 
-          // Reorder array in memory (this channel's active list only)
           const reordered = [...activeSlidesCache];
           const [movedItem] = reordered.splice(fromIndex, 1);
           reordered.splice(toIndex, 0, movedItem);
 
-          // Batch commit the new sequential orders to Firestore
           const batch = writeBatch(db);
           reordered.forEach((item, idx) => {
             batch.update(doc(db, "slides", item.id), { order: idx });
@@ -326,13 +342,12 @@
         activeTbody.appendChild(tr);
       });
 
-      // Render Library Slides
       libraryList.forEach((slide) => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td><img src="${slide.imageUrl}" class="thumb"></td>
-          <td><strong>${slide.title}</strong></td>
-          <td>${slide.duration}s</td>
+          <td>${thumbHtml(slide)}</td>
+          <td>${titleHtml(slide)}</td>
+          <td>${durationHtml(slide)}</td>
           <td>
             <button class="success-btn" data-activate="${slide.id}">Add to Rotation</button>
           </td>
@@ -343,14 +358,12 @@
         libraryTbody.appendChild(tr);
       });
 
-      // Button Action Listeners
       document.querySelectorAll('[data-archive]').forEach(btn => {
         btn.onclick = () => updateDoc(doc(db, "slides", btn.dataset.archive), { active: false });
       });
 
       document.querySelectorAll('[data-activate]').forEach(btn => {
         btn.onclick = () => {
-          // When restored, append to the end of the current channel's order
           const nextOrder = activeSlidesCache.length;
           updateDoc(doc(db, "slides", btn.dataset.activate), {
             active: true,
@@ -371,7 +384,6 @@
       });
     }
 
-    // Screens Heartbeat Monitor (shows every screen, all channels)
     function listenToScreens() {
       onSnapshot(collection(db, "screens"), (snapshot) => {
         const tbody = document.getElementById('screenTableBody');
@@ -404,15 +416,25 @@
       });
     }
 
-    // Upload New Slide to Active (tagged with whichever channel is selected in the dropdown)
+    // Upload New Slide (image or video)
     document.getElementById('uploadBtn').addEventListener('click', async () => {
       const file = document.getElementById('slideFile').files[0];
       const title = document.getElementById('slideTitle').value.trim() || "Untitled Slide";
-      const duration = parseInt(document.getElementById('slideDuration').value) || 10;
+      let duration = parseInt(document.getElementById('slideDuration').value) || 10;
       const uploadChannel = document.getElementById('slideChannel').value;
       const btn = document.getElementById('uploadBtn');
 
-      if (!file) return alert("Select an image first.");
+      if (!file) return alert("Select an image or video first.");
+
+      const isVideo = file.type.startsWith('video/');
+      if (isVideo) {
+        if (file.type !== 'video/mp4' && file.type !== 'video/webm') {
+          return alert("Please export the video as an MP4 first (iPhone .mov files often won't play on the TVs).");
+        }
+        const mb = file.size / (1024 * 1024);
+        if (mb > MAX_VIDEO_MB && !confirm(`This video is ${mb.toFixed(0)} MB. Large videos load slowly on the TVs. Upload anyway?`)) return;
+        duration = await getVideoLength(file); // for the dashboard; the player uses the real length
+      }
 
       btn.disabled = true;
       btn.innerText = "Uploading...";
@@ -421,11 +443,13 @@
         const storagePath = `slides/${Date.now()}_${file.name.replace(/\s+/g, '_')}`;
         const fileRef = ref(storage, storagePath);
 
-        await uploadBytes(fileRef, file);
+        // Cache header lets the TVs reuse their downloaded copy instead of re-pulling it every loop
+        await uploadBytes(fileRef, file, {
+          contentType: file.type,
+          cacheControl: 'public, max-age=604800'
+        });
         const imageUrl = await getDownloadURL(fileRef);
 
-        // Order is scoped to the slide's own channel, not the whole collection,
-        // so each channel keeps its own independent rotation order.
         const channelActiveCount = allSlidesCache.filter(
           s => (s.channel || 'hallway') === uploadChannel && s.active !== false
         ).length;
@@ -433,7 +457,8 @@
         await addDoc(collection(db, "slides"), {
           title,
           duration,
-          imageUrl,
+          imageUrl,          // field name kept for videos too, so old slides need no migration
+          type: isVideo ? 'video' : 'image',
           storagePath,
           channel: uploadChannel,
           active: true,
