@@ -69,6 +69,32 @@
       <button class="channel-tab" data-channel="lunch">Lunch TV</button>
       <button class="channel-tab" data-channel="office">Office Displays</button>
       <button class="channel-tab" data-channel="activities">Activities</button>
+      <button class="channel-tab" data-channel="split">Split Screens</button>
+    </div>
+
+    <!-- Announcements: only shown on the Split Screens tab. One shared list for every split TV. -->
+    <div class="card hidden" id="annCard">
+      <h3>Announcements (right side of split screens)</h3>
+      <div class="flex-row">
+        <input type="text" id="annText" maxlength="70" placeholder="One line, ~8 words (e.g., Picture day is Thursday)" style="flex: 3;">
+        <input type="date" id="annEnd" title="Last day it shows" style="width: 160px;">
+        <button id="annAddBtn">Add</button>
+      </div>
+      <p style="font-size: 0.8rem; color: #64748b; margin-top: 0.6rem;">
+        <span id="annCount">0</span>/70 characters. Shows through the end date, then drops off the TVs automatically.
+      </p>
+      <table style="margin: 1rem 0 0.75rem 0;">
+        <thead>
+          <tr>
+            <th>Announcement</th>
+            <th>Shows through</th>
+            <th>Status</th>
+            <th>Delete</th>
+          </tr>
+        </thead>
+        <tbody id="annTableBody"></tbody>
+      </table>
+      <button id="annClearBtn" class="secondary-btn">Clear expired</button>
     </div>
 
     <!-- Upload Card -->
@@ -82,11 +108,15 @@
           <option value="lunch">Lunch TV</option>
           <option value="office">Office Displays</option>
           <option value="activities">Activities</option>
+          <option value="split">Split Screens</option>
         </select>
         <input type="file" id="slideFile" accept="image/*,video/mp4,video/webm" multiple>
         <button id="uploadBtn">Upload to Active</button>
       </div>
-      <p style="font-size: 0.8rem; color: #64748b; margin-top: 0.6rem;">
+      <p id="sizeHint" style="font-size: 0.85rem; font-weight: 600; color: #2563eb; margin-top: 0.6rem;">
+        Design slides for this channel at 1920 × 1080.
+      </p>
+      <p style="font-size: 0.8rem; color: #64748b; margin-top: 0.3rem;">
         Defaults to whichever tab is selected above. You can select several files at once — they're added in filename order
         (Slide1, Slide2, … Slide10). With several files, the title box becomes a prefix ("Pep Rally" → "Pep Rally 1", "Pep Rally 2"),
         or leave it blank to use the file names. Videos: MP4, muted, under ~30 seconds — they play all the way through, so "Secs" is ignored.
@@ -178,8 +208,12 @@
       hallway: 'Hallway TVs',
       lunch: 'Lunch TV',
       office: 'Office Displays',
-      activities: 'Activities'
+      activities: 'Activities',
+      split: 'Split Screens'
     };
+    // Slide size each channel's TVs expect (split TVs show slides in a 1360 × 1080 area)
+    const sizeFor = (ch) => ch === 'split' ? '1360 × 1080' : '1920 × 1080';
+    let announcementsCache = [];
     const MAX_VIDEO_MB = 40; // bigger files load slowly on TVs and burn Storage download quota
 
     let currentChannel = 'hallway';
@@ -232,6 +266,7 @@
         document.getElementById('dashSection').classList.remove('hidden');
         listenToSlides();
         listenToScreens();
+        listenToAnnouncements();
       } else {
         document.getElementById('authCard').classList.remove('hidden');
         document.getElementById('dashSection').classList.add('hidden');
@@ -249,8 +284,106 @@
       document.getElementById('activeTableHeading').innerText =
         `Currently on ${CHANNEL_LABELS[currentChannel]} (Active Rotation)`;
       document.getElementById('slideChannel').value = currentChannel;
+      document.getElementById('annCard').classList.toggle('hidden', currentChannel !== 'split');
+      updateSizeHint();
 
       renderSlideTables();
+    });
+
+    // Size reminder follows the upload dropdown (which can differ from the selected tab)
+    function updateSizeHint() {
+      const ch = document.getElementById('slideChannel').value;
+      document.getElementById('sizeHint').innerText =
+        `Design slides for ${CHANNEL_LABELS[ch]} at ${sizeFor(ch)}.`;
+    }
+    document.getElementById('slideChannel').addEventListener('change', updateSizeHint);
+
+    // ---------- Announcements ----------
+    function todayStr(offsetDays = 0) {
+      const d = new Date();
+      d.setDate(d.getDate() + offsetDays);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+    function prettyDate(ymd) {
+      if (!ymd) return 'No end date';
+      const [y, m, d] = ymd.split('-').map(Number);
+      return new Date(y, m - 1, d).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+    }
+
+    const annText = document.getElementById('annText');
+    const annEnd = document.getElementById('annEnd');
+    annEnd.value = todayStr(7); // default: one week
+    annText.addEventListener('input', () => { document.getElementById('annCount').innerText = annText.value.length; });
+
+    function listenToAnnouncements() {
+      onSnapshot(collection(db, "announcements"), (snap) => {
+        const list = [];
+        snap.forEach(d => list.push({ id: d.id, ...d.data() }));
+        list.sort((a, b) => (a.createdAt?.toMillis?.() ?? Infinity) - (b.createdAt?.toMillis?.() ?? Infinity));
+        announcementsCache = list;
+        renderAnnouncements();
+      });
+    }
+
+    function renderAnnouncements() {
+      const tbody = document.getElementById('annTableBody');
+      tbody.innerHTML = '';
+      const today = todayStr();
+
+      if (announcementsCache.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" style="color:#64748b;">No announcements yet.</td></tr>';
+        return;
+      }
+
+      announcementsCache.forEach(a => {
+        const live = !a.endDate || a.endDate >= today;
+        const tr = document.createElement('tr');
+        if (!live) tr.style.opacity = '0.5';
+
+        const tdText = document.createElement('td');
+        tdText.textContent = a.text; // textContent so typed text can't break the page
+        const tdEnd = document.createElement('td');
+        tdEnd.textContent = prettyDate(a.endDate);
+        const tdStatus = document.createElement('td');
+        tdStatus.innerHTML = `<span class="badge" style="background:${live ? '#10b981' : '#94a3b8'};">${live ? 'Live' : 'Expired'}</span>`;
+        const tdDel = document.createElement('td');
+        const del = document.createElement('button');
+        del.className = 'danger-btn';
+        del.innerText = 'Delete';
+        del.onclick = () => deleteDoc(doc(db, "announcements", a.id));
+        tdDel.appendChild(del);
+
+        tr.append(tdText, tdEnd, tdStatus, tdDel);
+        tbody.appendChild(tr);
+      });
+    }
+
+    document.getElementById('annAddBtn').addEventListener('click', async () => {
+      const text = annText.value.trim();
+      if (!text) return alert("Type an announcement first.");
+      if (!annEnd.value) return alert("Pick the last day it should show.");
+      if (annEnd.value < todayStr()) return alert("That end date is already past.");
+      try {
+        await addDoc(collection(db, "announcements"), {
+          text,
+          endDate: annEnd.value,   // "YYYY-MM-DD"; TVs show it through this day
+          createdAt: serverTimestamp()
+        });
+        annText.value = '';
+        document.getElementById('annCount').innerText = '0';
+      } catch (err) {
+        alert("Couldn't add it: " + err.message + "\n\n(If this says permission denied, add the announcements rule in Firestore.)");
+      }
+    });
+
+    document.getElementById('annClearBtn').addEventListener('click', async () => {
+      const today = todayStr();
+      const expired = announcementsCache.filter(a => a.endDate && a.endDate < today);
+      if (expired.length === 0) return alert("Nothing expired to clear.");
+      if (!confirm(`Delete ${expired.length} expired announcement(s)?`)) return;
+      const batch = writeBatch(db);
+      expired.forEach(a => batch.delete(doc(db, "announcements", a.id)));
+      await batch.commit();
     });
 
     function listenToSlides() {
