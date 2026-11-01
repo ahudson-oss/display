@@ -4,12 +4,13 @@
   <meta charset="UTF-8">
   <title>TV Display Player</title>
   <style>
-    /* School colors for the split-screen announcements column — change these to restyle it */
+    /* Des Moines Prep theme colors for the split-screen column */
     :root {
-      --col-bg: #1e1b4b;
-      --col-text: #ffffff;
-      --col-muted: #c7d2fe;
-      --accent: #fbbf24;
+      --col-bg: #1e293b;     /* dark navy: announcements area */
+      --clock-bg: #324b6c;   /* slate blue: clock band */
+      --col-text: #f8fafc;   /* off-white: main text */
+      --col-muted: #7ba4db;  /* light blue: date, page count */
+      --accent: #ffae00;     /* gold: title bar and announcement markers */
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; cursor: none; }
@@ -36,21 +37,25 @@
       display: flex; flex-direction: column;
       position: absolute; top: 0; right: 0;
       width: 29.1667%; height: 100%;
-      padding: 4vh 2.2vw;
       overflow: hidden;
       background: var(--col-bg); color: var(--col-text);
       font-family: "Segoe UI", Roboto, Arial, sans-serif;
     }
-    #clock { padding-bottom: 2.5vh; margin-bottom: 3vh; border-bottom: 0.3vh solid rgba(255,255,255,0.2); }
+    /* Each band runs edge to edge; padding lives inside the bands */
+    #clock { background: var(--clock-bg); padding: 3.5vh 2.2vw 3vh; }
     #time { font-size: 7vh; font-weight: 700; line-height: 1; }
     #date { font-size: 3vh; color: var(--col-muted); margin-top: 1vh; }
+    /* Gold title bar. Sized by width (vw) and never wraps, so "ANNOUNCEMENTS" always fits */
     #annHeader {
-      font-size: 2.6vh; font-weight: 700; letter-spacing: 0.15em; text-transform: uppercase;
-      color: var(--accent); margin-bottom: 2.5vh;
+      background: var(--accent); color: var(--col-bg);
+      padding: 1.6vh 2.2vw;
+      font-size: 1.4vw; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase;
+      white-space: nowrap; overflow: hidden; text-overflow: clip;
     }
     #annList {
       flex: 1; list-style: none;
       display: flex; flex-direction: column; gap: 3vh;
+      padding: 3.5vh 2.2vw 0;
       transition: opacity 0.6s ease-in-out;
     }
     #annList li {
@@ -58,7 +63,7 @@
       border-left: 0.6vh solid var(--accent); padding-left: 1.2vw;
     }
     #annList li.empty { border: none; padding: 0; font-size: 3.4vh; font-weight: 400; color: var(--col-muted); }
-    #pager { font-size: 2.2vh; color: var(--col-muted); text-align: right; min-height: 2.2vh; }
+    #pager { font-size: 2.2vh; color: var(--col-muted); text-align: right; min-height: 2.2vh; padding: 0 2.2vw 3vh; }
   </style>
 </head>
 <body>
@@ -95,8 +100,9 @@
     // ?screen=Name  ?channel=Name (default hallway)  ?layout=split (default full screen)
     const urlParams = new URLSearchParams(window.location.search);
     const screenId = urlParams.get('screen') || 'TV-Default';
-    const channel = urlParams.get('channel') || 'hallway';
     const layout = urlParams.get('layout') === 'split' ? 'split' : 'full';
+    // Split TVs default to the Split Screens slides, so ?layout=split is all they need
+    const channel = urlParams.get('channel') || (layout === 'split' ? 'split' : 'hallway');
 
     const FADE_MS = 800;
     const LOAD_TIMEOUT_MS = 20000;
