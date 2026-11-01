@@ -4,12 +4,24 @@
   <meta charset="UTF-8">
   <title>TV Display Player</title>
   <style>
+    /* School colors for the split-screen announcements column — change these to restyle it */
+    :root {
+      --col-bg: #1e1b4b;
+      --col-text: #ffffff;
+      --col-muted: #c7d2fe;
+      --accent: #fbbf24;
+    }
+
     * { margin: 0; padding: 0; box-sizing: border-box; cursor: none; }
     body, html { width: 100vw; height: 100vh; overflow: hidden; background: #000; }
-    #stage { position: relative; width: 100%; height: 100%; }
-    /* Every slide (image or video) is a layer stacked on top of the last one.
-       The new layer fades IN over the old one, which stays fully visible underneath,
-       so the screen never passes through black. */
+
+    /* Full-screen layout (default): slides fill the whole TV */
+    #stage { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+
+    /* Split layout (?layout=split): slides on the left 1360 of 1920 px,
+       announcements column on the right 560 px. Percentages so it scales to any TV resolution. */
+    body.split #stage { width: 70.8333%; }
+
     .layer {
       position: absolute; inset: 0;
       width: 100%; height: 100%;
@@ -18,10 +30,49 @@
       transition: opacity 0.8s ease-in-out;
     }
     .layer.show { opacity: 1; }
+
+    #sidebar { display: none; }
+    body.split #sidebar {
+      display: flex; flex-direction: column;
+      position: absolute; top: 0; right: 0;
+      width: 29.1667%; height: 100%;
+      padding: 4vh 2.2vw;
+      overflow: hidden;
+      background: var(--col-bg); color: var(--col-text);
+      font-family: "Segoe UI", Roboto, Arial, sans-serif;
+    }
+    #clock { padding-bottom: 2.5vh; margin-bottom: 3vh; border-bottom: 0.3vh solid rgba(255,255,255,0.2); }
+    #time { font-size: 7vh; font-weight: 700; line-height: 1; }
+    #date { font-size: 3vh; color: var(--col-muted); margin-top: 1vh; }
+    #annHeader {
+      font-size: 2.6vh; font-weight: 700; letter-spacing: 0.15em; text-transform: uppercase;
+      color: var(--accent); margin-bottom: 2.5vh;
+    }
+    #annList {
+      flex: 1; list-style: none;
+      display: flex; flex-direction: column; gap: 3vh;
+      transition: opacity 0.6s ease-in-out;
+    }
+    #annList li {
+      font-size: 4.4vh; line-height: 1.2; font-weight: 600;
+      border-left: 0.6vh solid var(--accent); padding-left: 1.2vw;
+    }
+    #annList li.empty { border: none; padding: 0; font-size: 3.4vh; font-weight: 400; color: var(--col-muted); }
+    #pager { font-size: 2.2vh; color: var(--col-muted); text-align: right; min-height: 2.2vh; }
   </style>
 </head>
 <body>
   <div id="stage"></div>
+
+  <aside id="sidebar">
+    <div id="clock">
+      <div id="time"></div>
+      <div id="date"></div>
+    </div>
+    <div id="annHeader">Announcements</div>
+    <ul id="annList"></ul>
+    <div id="pager"></div>
+  </aside>
 
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
@@ -41,29 +92,33 @@
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
 
-    // ?screen=Name and ?channel=Name from the TV's URL. channel defaults to "hallway".
+    // ?screen=Name  ?channel=Name (default hallway)  ?layout=split (default full screen)
     const urlParams = new URLSearchParams(window.location.search);
     const screenId = urlParams.get('screen') || 'TV-Default';
     const channel = urlParams.get('channel') || 'hallway';
+    const layout = urlParams.get('layout') === 'split' ? 'split' : 'full';
 
-    const FADE_MS = 800;          // keep in sync with the CSS transition
-    const LOAD_TIMEOUT_MS = 20000; // skip a slide that won't load instead of freezing
+    const FADE_MS = 800;
+    const LOAD_TIMEOUT_MS = 20000;
+    const ANN_PER_PAGE = 4;       // announcements shown at once
+    const ANN_PAGE_SECONDS = 12;  // how long each page stays up
 
     const stage = document.getElementById('stage');
     let playlist = [];
     let currentIndex = 0;
-    let current = null;      // the layer currently on screen
+    let current = null;
     let timer = null;
     let running = false;
     let nowShowing = 'None';
 
-    // ---------- Heartbeat (moved below db so the first ping doesn't fail) ----------
+    // ---------- Heartbeat ----------
     async function sendHeartbeat() {
       try {
         await setDoc(doc(db, "screens", screenId), {
           lastSeen: serverTimestamp(),
           currentSlide: nowShowing,
           channel,
+          layout,
           status: 'online'
         }, { merge: true });
       } catch (err) {
@@ -82,7 +137,6 @@
       const channelSlides = slides.filter(item => (item.channel || 'hallway') === channel);
       channelSlides.sort((a, b) => (a.order || 0) - (b.order || 0));
 
-      // Warm the cache for images (videos load when their turn comes)
       channelSlides.forEach(item => {
         if (item.type !== 'video') { const pre = new Image(); pre.src = item.imageUrl; }
       });
@@ -95,14 +149,12 @@
     });
 
     // ---------- Building and loading a layer ----------
-    // Note: the Firestore field is still called imageUrl for videos too, so old slides need no migration.
     function makeLayer(item) {
       const isVideo = item.type === 'video';
       const el = document.createElement(isVideo ? 'video' : 'img');
       el.className = 'layer';
       el.dataset.key = item.id + '|' + item.imageUrl;
       if (isVideo) {
-        // TV browsers only autoplay muted video
         el.muted = true; el.setAttribute('muted', '');
         el.playsInline = true; el.setAttribute('playsinline', '');
         el.preload = 'auto';
@@ -128,11 +180,10 @@
     }
 
     function removeLayer(el) {
-      if (el.tagName === 'VIDEO') { el.pause(); el.removeAttribute('src'); el.load(); } // frees TV memory
+      if (el.tagName === 'VIDEO') { el.pause(); el.removeAttribute('src'); el.load(); }
       el.remove();
     }
 
-    // ---------- When to move on ----------
     function scheduleAdvance(el, item) {
       clearTimeout(timer);
       if (el.tagName === 'VIDEO') {
@@ -140,7 +191,6 @@
         const advance = () => { if (done) return; done = true; clearTimeout(timer); showNext(); };
         el.addEventListener('ended', advance, { once: true });
         el.addEventListener('error', advance, { once: true });
-        // Safety net in case 'ended' never fires (stalled stream): full length + 5s
         const len = isFinite(el.duration) && el.duration > 0 ? el.duration : 120;
         timer = setTimeout(advance, (len + 5) * 1000);
       } else {
@@ -148,7 +198,7 @@
       }
     }
 
-    // ---------- Main loop ----------
+    // ---------- Main slide loop ----------
     async function showNext() {
       clearTimeout(timer);
 
@@ -163,7 +213,6 @@
       currentIndex = (currentIndex + 1) % playlist.length;
       const key = item.id + '|' + item.imageUrl;
 
-      // Only one slide in the rotation: reuse what's on screen (replay if it's a video)
       if (current && current.dataset.key === key) {
         if (current.tagName === 'VIDEO') { current.currentTime = 0; current.play().catch(() => {}); }
         scheduleAdvance(current, item);
@@ -171,7 +220,7 @@
       }
 
       const next = makeLayer(item);
-      stage.appendChild(next); // sits on top, invisible until ready
+      stage.appendChild(next);
 
       try {
         await whenReady(next);
@@ -183,7 +232,6 @@
         return;
       }
 
-      // Fade the new layer in over the old one, then clean up the old one
       next.classList.add('show');
       const old = current;
       current = next;
@@ -191,6 +239,89 @@
       if (old) setTimeout(() => removeLayer(old), FADE_MS + 100);
 
       scheduleAdvance(next, item);
+    }
+
+    // ---------- Split layout: clock + announcements ----------
+    // Only runs on TVs with ?layout=split. Full-screen TVs never load announcements.
+    function todayStr() {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+
+    function startSidebar() {
+      const timeEl = document.getElementById('time');
+      const dateEl = document.getElementById('date');
+      const listEl = document.getElementById('annList');
+      const pagerEl = document.getElementById('pager');
+
+      function tickClock() {
+        const now = new Date();
+        timeEl.textContent = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        dateEl.textContent = now.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+      }
+      tickClock();
+      setInterval(tickClock, 10000);
+
+      let announcements = [];
+      let page = 0;
+
+      // Live = has text and its end date is today or later. Shown oldest-first, same order as admin.
+      function liveAnnouncements() {
+        const today = todayStr();
+        return announcements
+          .filter(a => a.text && (!a.endDate || a.endDate >= today))
+          .sort((a, b) => (a.createdAt?.toMillis?.() ?? Infinity) - (b.createdAt?.toMillis?.() ?? Infinity));
+      }
+
+      function drawPage(items, pages) {
+        listEl.innerHTML = '';
+        if (items.length === 0) {
+          const li = document.createElement('li');
+          li.className = 'empty';
+          li.textContent = 'No announcements right now.';
+          listEl.appendChild(li);
+        } else {
+          items.forEach(a => {
+            const li = document.createElement('li');
+            li.textContent = a.text; // textContent, never innerHTML, so typed text can't break the page
+            listEl.appendChild(li);
+          });
+        }
+        pagerEl.textContent = pages > 1 ? `${page + 1} / ${pages}` : '';
+      }
+
+      function render(advance) {
+        const live = liveAnnouncements();
+        const pages = Math.max(1, Math.ceil(live.length / ANN_PER_PAGE));
+        if (advance) page = (page + 1) % pages;
+        if (page >= pages) page = 0;
+        const items = live.slice(page * ANN_PER_PAGE, (page + 1) * ANN_PER_PAGE);
+
+        if (!advance) { drawPage(items, pages); return; }
+        if (pages === 1 && listEl.children.length === items.length && items.length > 0) {
+          drawPage(items, pages); return; // one page only: refresh quietly, no flicker
+        }
+        listEl.style.opacity = '0';
+        setTimeout(() => { drawPage(items, pages); listEl.style.opacity = '1'; }, 600);
+      }
+
+      onSnapshot(collection(db, "announcements"), (snap) => {
+        const list = [];
+        snap.forEach(d => list.push({ id: d.id, ...d.data() }));
+        announcements = list;
+        render(false);
+      }, (err) => {
+        // If announcements can't load (rules, network), the slides keep running regardless
+        console.warn("Announcements unavailable:", err);
+      });
+
+      render(false);
+      setInterval(() => render(true), ANN_PAGE_SECONDS * 1000);
+    }
+
+    if (layout === 'split') {
+      document.body.classList.add('split');
+      startSidebar();
     }
 
     // Daily 3:00 AM clean refresh to clear browser RAM
