@@ -42,6 +42,8 @@
       font-family: "Segoe UI", Roboto, Arial, sans-serif;
     }
     /* Each band runs edge to edge; padding lives inside the bands */
+    /* flex-shrink: 0 keeps the clock, title bar and page count from being squeezed by long announcements */
+    #clock, #annHeader, #pager { flex-shrink: 0; }
     #clock { background: var(--clock-bg); padding: 3.5vh 2.2vw 3vh; }
     #time { font-size: 7vh; font-weight: 700; line-height: 1; }
     #date { font-size: 3vh; color: var(--col-muted); margin-top: 1vh; }
@@ -53,13 +55,14 @@
       white-space: nowrap; overflow: hidden; text-overflow: clip;
     }
     #annList {
-      flex: 1; list-style: none;
+      flex: 1; min-height: 0; overflow: hidden; list-style: none;
       display: flex; flex-direction: column; gap: 3vh;
       padding: 3.5vh 2.2vw 0;
       transition: opacity 0.6s ease-in-out;
     }
     #annList li {
-      font-size: 4.4vh; line-height: 1.2; font-weight: 600;
+      flex-shrink: 0;
+      font-size: 4.2vh; line-height: 1.2; font-weight: 600;
       border-left: 0.6vh solid var(--accent); padding-left: 1.2vw;
     }
     #annList li.empty { border: none; padding: 0; font-size: 3.4vh; font-weight: 400; color: var(--col-muted); }
@@ -279,7 +282,35 @@
           .sort((a, b) => (a.createdAt?.toMillis?.() ?? Infinity) - (b.createdAt?.toMillis?.() ?? Infinity));
       }
 
-      function drawPage(items, pages) {
+      function makeItem(a) {
+        const li = document.createElement('li');
+        li.textContent = a.text; // textContent, never innerHTML, so typed text can't break the page
+        return li;
+      }
+      const overflowing = () => listEl.scrollHeight > listEl.clientHeight + 1;
+
+      // Split announcements into pages by what actually FITS on screen (max ANN_PER_PAGE each).
+      // Short ones share a page; long ones get fewer per page instead of running off the bottom.
+      // Measuring happens in one synchronous pass, so nothing flashes on screen.
+      function buildPages(live) {
+        const pages = [];
+        let i = 0;
+        while (i < live.length) {
+          listEl.innerHTML = '';
+          const pageItems = [];
+          while (i < live.length && pageItems.length < ANN_PER_PAGE) {
+            const li = makeItem(live[i]);
+            listEl.appendChild(li);
+            if (overflowing() && pageItems.length > 0) { li.remove(); break; }
+            pageItems.push(live[i]);
+            i++;
+          }
+          pages.push(pageItems);
+        }
+        return pages.length ? pages : [[]];
+      }
+
+      function drawPage(items, totalPages) {
         listEl.innerHTML = '';
         if (items.length === 0) {
           const li = document.createElement('li');
@@ -288,28 +319,38 @@
           listEl.appendChild(li);
         } else {
           items.forEach(a => {
-            const li = document.createElement('li');
-            li.textContent = a.text; // textContent, never innerHTML, so typed text can't break the page
+            const li = makeItem(a);
             listEl.appendChild(li);
+            // One announcement too long to fit even by itself: shrink it until it does
+            let size = 4.2;
+            while (items.length === 1 && overflowing() && size > 2.6) {
+              size -= 0.2;
+              li.style.fontSize = size + 'vh';
+            }
           });
         }
-        pagerEl.textContent = pages > 1 ? `${page + 1} / ${pages}` : '';
+        pagerEl.textContent = totalPages > 1 ? `${page + 1} / ${totalPages}` : '';
       }
 
       function render(advance) {
-        const live = liveAnnouncements();
-        const pages = Math.max(1, Math.ceil(live.length / ANN_PER_PAGE));
-        if (advance) page = (page + 1) % pages;
-        if (page >= pages) page = 0;
-        const items = live.slice(page * ANN_PER_PAGE, (page + 1) * ANN_PER_PAGE);
+        const show = () => {
+          const pages = buildPages(liveAnnouncements());
+          if (advance) page = (page + 1) % pages.length;
+          if (page >= pages.length) page = 0;
+          drawPage(pages[page], pages.length);
+          return pages.length;
+        };
 
-        if (!advance) { drawPage(items, pages); return; }
-        if (pages === 1 && listEl.children.length === items.length && items.length > 0) {
-          drawPage(items, pages); return; // one page only: refresh quietly, no flicker
-        }
+        if (!advance) { show(); return; }
+        // Only one page: refresh quietly, no fade/flicker
+        if (buildPages(liveAnnouncements()).length === 1) { page = -1; show(); return; }
         listEl.style.opacity = '0';
-        setTimeout(() => { drawPage(items, pages); listEl.style.opacity = '1'; }, 600);
+        setTimeout(() => { show(); listEl.style.opacity = '1'; }, 600);
       }
+
+      // Re-fit if the screen size changes (e.g. testing in a resized laptop window)
+      let resizeTimer = null;
+      window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => render(false), 300); });
 
       onSnapshot(collection(db, "announcements"), (snap) => {
         const list = [];
