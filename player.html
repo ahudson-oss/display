@@ -32,6 +32,20 @@
     }
     .layer.show { opacity: 1; }
 
+    /* Fallback screen: shows when a channel has no active slides, so the TV never sits black.
+       It sits underneath the slide layers, so slides simply fade in over it. */
+    #fallback {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: #1e293b; color: #f8fafc;
+      font-family: "Segoe UI", Roboto, Arial, sans-serif; text-align: center;
+      opacity: 0; transition: opacity 0.8s ease-in-out;
+    }
+    #fallback.show { opacity: 1; }
+    #fallback .fb-name { font-size: 11vh; font-weight: 800; letter-spacing: 0.02em; line-height: 1.05; }
+    #fallback .fb-bar { width: 18vh; height: 1.2vh; background: #ffae00; border-radius: 1vh; margin: 3.5vh 0; }
+    #fallback .fb-sub { font-size: 4vh; color: #7ba4db; }
+
     #sidebar { display: none; }
     body.split #sidebar {
       display: flex; flex-direction: column;
@@ -70,7 +84,14 @@
   </style>
 </head>
 <body>
-  <div id="stage"></div>
+  <div id="stage">
+    <!-- Edit these two lines to change what the fallback screen says -->
+    <div id="fallback">
+      <div class="fb-name">Des Moines Prep</div>
+      <div class="fb-bar"></div>
+      <div class="fb-sub">Welcome</div>
+    </div>
+  </div>
 
   <aside id="sidebar">
     <div id="clock">
@@ -113,6 +134,12 @@
     const ANN_PAGE_SECONDS = 12;  // how long each page stays up
 
     const stage = document.getElementById('stage');
+    const fallbackEl = document.getElementById('fallback');
+    const FALLBACK_LABEL = 'Fallback screen (no active slides)';
+    function showFallback() { fallbackEl.classList.add('show'); nowShowing = FALLBACK_LABEL; }
+    function hideFallback() { fallbackEl.classList.remove('show'); }
+    // If nothing has loaded 8s after startup (no slides, or no network), show the fallback instead of black
+    setTimeout(() => { if (!current) showFallback(); }, 8000);
     let playlist = [];
     let currentIndex = 0;
     let current = null;
@@ -153,6 +180,9 @@
       playlist = channelSlides;
       if (currentIndex >= playlist.length) currentIndex = 0;
       if (!running && playlist.length > 0) { running = true; showNext(); }
+      // Last slide removed while one is still on screen: go to the fallback right away
+      if (playlist.length === 0 && running) showNext();
+      if (playlist.length === 0 && !current) showFallback();
     }, (err) => {
       console.warn("Snapshot error (network jitter); running on memory buffer:", err);
     });
@@ -197,7 +227,8 @@
       clearTimeout(timer);
       if (el.tagName === 'VIDEO') {
         let done = false;
-        const advance = () => { if (done) return; done = true; clearTimeout(timer); showNext(); };
+        // isConnected check: a video removed early (e.g. deleted mid-play) must not restart the loop
+        const advance = () => { if (done || !el.isConnected) return; done = true; clearTimeout(timer); showNext(); };
         el.addEventListener('ended', advance, { once: true });
         el.addEventListener('error', advance, { once: true });
         const len = isFinite(el.duration) && el.duration > 0 ? el.duration : 120;
@@ -213,7 +244,8 @@
 
       if (playlist.length === 0) {
         if (current) { const old = current; old.classList.remove('show'); setTimeout(() => removeLayer(old), FADE_MS + 100); }
-        current = null; nowShowing = 'None'; running = false;
+        current = null; running = false;
+        showFallback();
         return;
       }
 
@@ -242,6 +274,7 @@
       }
 
       next.classList.add('show');
+      hideFallback(); // fades out underneath the incoming slide
       const old = current;
       current = next;
       nowShowing = item.title || 'Untitled';
