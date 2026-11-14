@@ -22,6 +22,9 @@
     .success-btn { background: #10b981; }
     .success-btn:hover { background: #059669; }
     .badge { display: inline-block; padding: 0.25rem 0.6rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; color: white; }
+    .edit-btn { background: #e2e8f0; color: #0f172a; }
+    .edit-btn:hover { background: #cbd5e1; }
+    tr.editing { background: #fffbeb; }
     .type-tag { display: inline-block; margin-left: 0.4rem; padding: 0.1rem 0.45rem; border-radius: 4px; font-size: 0.7rem; font-weight: 600; background: #ede9fe; color: #6d28d9; vertical-align: middle; }
     details summary { font-size: 1.1rem; font-weight: 600; cursor: pointer; padding: 0.5rem 0; margin-bottom: 0.5rem; color: #334155; }
 
@@ -221,6 +224,56 @@
     let activeSlidesCache = [];
     let draggedRow = null;
 
+    // ---------- Edit title / duration after upload ----------
+    let editingId = null;   // slide currently being edited (one at a time)
+    let editDraft = null;   // keeps typed values if the table refreshes mid-edit
+
+    function escapeAttr(s) {
+      return String(s ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    }
+
+    // Title + duration cells: plain text normally, inputs while editing
+    function titleCell(slide) {
+      if (slide.id !== editingId) return titleHtml(slide);
+      const val = editDraft?.title ?? slide.title;
+      return `<input type="text" class="edit-title" value="${escapeAttr(val)}" style="width: 100%;">`;
+    }
+    function durationCell(slide) {
+      if (slide.id !== editingId || slide.type === 'video') return durationHtml(slide); // videos always play in full
+      const val = editDraft?.duration ?? slide.duration ?? 10;
+      return `<input type="number" class="edit-duration" min="3" max="120" value="${escapeAttr(val)}" style="width: 70px;"> s`;
+    }
+    function editButtons(slide, normalButtons) {
+      if (slide.id !== editingId) return `<button class="edit-btn" data-edit="${slide.id}">Edit</button> ${normalButtons}`;
+      return `<button class="success-btn" data-save="${slide.id}">Save</button> <button class="secondary-btn" data-cancel="1">Cancel</button>`;
+    }
+
+    async function saveEdit(id) {
+      const row = document.querySelector(`tr[data-edit-row="${id}"]`);
+      if (!row) return;
+      const title = row.querySelector('.edit-title').value.trim();
+      if (!title) return alert("Give the slide a title.");
+      const update = { title };
+      const durInput = row.querySelector('.edit-duration');
+      if (durInput) {
+        const d = parseInt(durInput.value);
+        if (!d || d < 3 || d > 120) return alert("Duration should be between 3 and 120 seconds.");
+        update.duration = d;
+      }
+      try {
+        await updateDoc(doc(db, "slides", id), update);
+        editingId = null; editDraft = null;
+        renderSlideTables();
+      } catch (err) {
+        alert("Couldn't save: " + err.message);
+      }
+    }
+
+    function cancelEdit() {
+      editingId = null; editDraft = null;
+      renderSlideTables();
+    }
+
     // Preview cell: a still frame for videos, the image otherwise
     function thumbHtml(slide) {
       if (slide.type === 'video') {
@@ -278,6 +331,7 @@
       const btn = e.target.closest('.channel-tab');
       if (!btn) return;
       currentChannel = btn.dataset.channel;
+      editingId = null; editDraft = null; // switching tabs cancels an unsaved edit
 
       document.querySelectorAll('.channel-tab').forEach(t => t.classList.remove('active-tab'));
       btn.classList.add('active-tab');
@@ -396,6 +450,12 @@
     }
 
     function renderSlideTables() {
+      // If a slide is mid-edit, hold onto what's been typed so a refresh doesn't wipe it
+      if (editingId) {
+        const t = document.querySelector('.edit-title');
+        const d = document.querySelector('.edit-duration');
+        if (t) editDraft = { title: t.value, duration: d ? d.value : undefined };
+      }
       const activeTbody = document.getElementById('activeSlideTableBody');
       const libraryTbody = document.getElementById('libraryTableBody');
       activeTbody.innerHTML = '';
@@ -415,18 +475,20 @@
 
       activeList.forEach((slide, index) => {
         const tr = document.createElement('tr');
-        tr.className = 'draggable-row';
-        tr.draggable = true;
+        const isEditing = slide.id === editingId;
+        tr.className = isEditing ? 'editing' : 'draggable-row';
+        tr.draggable = !isEditing; // no dragging while typing in the row
         tr.dataset.id = slide.id;
         tr.dataset.index = index;
+        tr.dataset.editRow = slide.id;
 
         tr.innerHTML = `
           <td><span class="drag-handle">☰</span></td>
           <td>${thumbHtml(slide)}</td>
-          <td>${titleHtml(slide)}</td>
-          <td>${durationHtml(slide)}</td>
+          <td>${titleCell(slide)}</td>
+          <td>${durationCell(slide)}</td>
           <td>
-            <button class="secondary-btn" data-archive="${slide.id}">Move to Library</button>
+            ${editButtons(slide, `<button class="secondary-btn" data-archive="${slide.id}">Move to Library</button>`)}
           </td>
           <td>
             <button class="danger-btn" data-delete="${slide.id}" data-path="${slide.storagePath}">Delete</button>
@@ -479,12 +541,14 @@
 
       libraryList.forEach((slide) => {
         const tr = document.createElement('tr');
+        if (slide.id === editingId) tr.className = 'editing';
+        tr.dataset.editRow = slide.id;
         tr.innerHTML = `
           <td>${thumbHtml(slide)}</td>
-          <td>${titleHtml(slide)}</td>
-          <td>${durationHtml(slide)}</td>
+          <td>${titleCell(slide)}</td>
+          <td>${durationCell(slide)}</td>
           <td>
-            <button class="success-btn" data-activate="${slide.id}">Add to Rotation</button>
+            ${editButtons(slide, `<button class="success-btn" data-activate="${slide.id}">Add to Rotation</button>`)}
           </td>
           <td>
             <button class="danger-btn" data-delete="${slide.id}" data-path="${slide.storagePath}">Delete</button>
@@ -492,6 +556,25 @@
         `;
         libraryTbody.appendChild(tr);
       });
+
+      document.querySelectorAll('[data-edit]').forEach(btn => {
+        btn.onclick = () => { editingId = btn.dataset.edit; editDraft = null; renderSlideTables(); };
+      });
+      document.querySelectorAll('[data-save]').forEach(btn => {
+        btn.onclick = () => saveEdit(btn.dataset.save);
+      });
+      document.querySelectorAll('[data-cancel]').forEach(btn => {
+        btn.onclick = cancelEdit;
+      });
+      // Enter saves, Esc cancels; jump straight into the title box
+      document.querySelectorAll('.edit-title, .edit-duration').forEach(input => {
+        input.onkeydown = (e) => {
+          if (e.key === 'Enter') saveEdit(editingId);
+          if (e.key === 'Escape') cancelEdit();
+        };
+      });
+      const titleBox = document.querySelector('.edit-title');
+      if (titleBox && !editDraft) { titleBox.focus(); titleBox.select(); }
 
       document.querySelectorAll('[data-archive]').forEach(btn => {
         btn.onclick = () => updateDoc(doc(db, "slides", btn.dataset.archive), { active: false });
