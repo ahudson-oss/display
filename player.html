@@ -162,7 +162,7 @@
       }
     }
     sendHeartbeat();
-    setInterval(sendHeartbeat, 60000);
+    setInterval(sendHeartbeat, 5 * 60 * 1000);
 
     // ---------- Realtime playlist ----------
     const q = query(collection(db, "slides"), where("active", "==", true));
