@@ -176,7 +176,6 @@
           <th>Channel</th>
           <th>Status</th>
           <th>Last Seen</th>
-          <th>Current Slide</th>
         </tr>
       </thead>
       <tbody id="screenTableBody"></tbody>
@@ -612,7 +611,7 @@
           const screen = snapDoc.data();
           const lastSeenMs = screen.lastSeen ? screen.lastSeen.toMillis() : 0;
           const diffMinutes = Math.round((now - lastSeenMs) / 60000);
-          const isOnline = lastSeenMs > 0 && diffMinutes < 3;
+          const isOnline = lastSeenMs > 0 && diffMinutes < 10;
           const channelLabel = CHANNEL_LABELS[screen.channel] || 'Hallway TVs';
 
           const tr = document.createElement('tr');
@@ -627,7 +626,6 @@
             <td style="color: ${isOnline ? '#0f172a' : '#ef4444'};">
               ${lastSeenMs === 0 ? 'Never' : diffMinutes === 0 ? 'Just now' : diffMinutes + 'm ago'}
             </td>
-            <td>${screen.currentSlide || 'None'}</td>
           `;
           tbody.appendChild(tr);
         });
