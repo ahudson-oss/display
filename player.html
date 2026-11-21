@@ -152,7 +152,6 @@
       try {
         await setDoc(doc(db, "screens", screenId), {
           lastSeen: serverTimestamp(),
-          currentSlide: nowShowing,
           channel,
           layout,
           status: 'online'
